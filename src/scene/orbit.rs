@@ -31,9 +31,10 @@ struct Arc {
     color: Lab,
 }
 
-/// Radii of the dominant ring as a share of the width: at least a screen
-/// and more, so its curvature stays gentle
-const RADIUS: (f64, f64) = (1.2, 3.5);
+/// Radii of the dominant ring as a share of the width: well over a
+/// screen, so only a small part of the ring shows and its curvature
+/// stays gentle
+const RADIUS: (f64, f64) = (1.5, 4.0);
 /// Width of the dominant ring as a share of the height
 const WIDTH: (f64, f64) = (0.08, 0.16);
 /// No ring is thinner than this share of the height
@@ -59,8 +60,9 @@ pub fn orbit(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> Vec<P
 }
 
 /// One composition and how well it reads. Rings that cross more than
-/// once, crowd the middle, or show alike lengths read as a symbol; a
-/// scene wants one clear sweep, the rest quieter, and mostly ground
+/// once, crowd the middle, or show alike lengths read as a symbol, and
+/// even one crossing is a little less quiet than none; a scene wants one
+/// clear sweep, the rest quieter, and mostly ground
 fn candidate(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> (Vec<Polygon>, f64) {
     let arcs = arcs(palette, rng, width, height);
     let m = 0.02 * height;
@@ -89,6 +91,8 @@ fn candidate(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> (Vec<
     let crossings = crossings(&arcs, width, height);
     if crossings > 1 {
         score -= 3.0 * (crossings - 1) as f64;
+    } else if crossings == 1 {
+        score -= 0.5;
     }
     let seen: Vec<f64> = ranges
         .iter()
