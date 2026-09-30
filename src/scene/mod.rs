@@ -2,7 +2,6 @@
 //! convex polygons in paint order. Nothing here touches pixels.
 
 mod facet;
-mod mesh;
 
 use crate::palette::Palette;
 use crate::raster::Polygon;
@@ -12,20 +11,14 @@ use crate::rng::Rng;
 pub enum Kind {
     /// A paneled facade in one hue, with seams and sunk panels
     Facet,
-    /// Strong low-poly relief under a linear gradient
-    Terrain,
-    /// Faint low-poly relief under colors blended around a pale center
-    Lowpoly,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 3] = [Kind::Facet, Kind::Terrain, Kind::Lowpoly];
+    pub const ALL: [Kind; 1] = [Kind::Facet];
 
     pub fn name(self) -> &'static str {
         match self {
             Kind::Facet => "facet",
-            Kind::Terrain => "terrain",
-            Kind::Lowpoly => "lowpoly",
         }
     }
 }
@@ -40,8 +33,6 @@ pub fn compose(
 ) -> Vec<Polygon> {
     match kind {
         Kind::Facet => facet::facet(palette, rng, width, height),
-        Kind::Terrain => mesh::mesh(palette, rng, width, height, mesh::Relief::Strong),
-        Kind::Lowpoly => mesh::mesh(palette, rng, width, height, mesh::Relief::Faint),
     }
 }
 
