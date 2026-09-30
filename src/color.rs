@@ -101,13 +101,6 @@ impl Lab {
     pub fn with_lightness(self, l: f32) -> Lab {
         Lab::new(l, self.a, self.b)
     }
-
-    /// The same hue at lightness `l`, with chroma at most `cap`
-    pub fn level(self, l: f32, cap: f32) -> Lab {
-        let chroma = self.a.hypot(self.b);
-        let k = if chroma > cap { cap / chroma } else { 1.0 };
-        Lab::new(l, self.a * k, self.b * k)
-    }
 }
 
 #[cfg(test)]
@@ -133,21 +126,6 @@ mod tests {
         assert_eq!(x.mix(y, 0.0), x);
         assert_eq!(x.mix(y, 1.0), y);
         assert_eq!(x.mix(y, 0.5), Lab::new(0.5, 0.0, 0.0));
-    }
-
-    #[test]
-    fn leveling_sets_lightness_and_caps_chroma_but_keeps_hue() {
-        let red = Lab::from_srgb([165, 34, 47]);
-        let leveled = red.level(0.78, 0.05);
-        assert_eq!(leveled.l, 0.78);
-        assert!((leveled.a.hypot(leveled.b) - 0.05).abs() < 1e-6);
-        assert!((leveled.b.atan2(leveled.a) - red.b.atan2(red.a)).abs() < 1e-5);
-    }
-
-    #[test]
-    fn leveling_leaves_a_duller_color_as_dull_as_it_was() {
-        let grey = Lab::new(0.3, 0.01, 0.0);
-        assert_eq!(grey.level(0.5, 0.05), Lab::new(0.5, 0.01, 0.0));
     }
 }
 
