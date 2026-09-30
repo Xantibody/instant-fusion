@@ -55,6 +55,14 @@
             programs.taplo.enable = true;
           };
 
+          packages.default = pkgs.rustPlatform.buildRustPackage {
+            pname = "instant-fusion";
+            version = "0.1.0";
+            src = ./.;
+            cargoLock.lockFile = ./Cargo.lock;
+            meta.mainProgram = "instant-fusion";
+          };
+
           devShells.default = pkgs.mkShell {
             packages = [ rustToolchain ];
           };
