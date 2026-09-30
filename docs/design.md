@@ -59,17 +59,21 @@ instant-fusion --scheme <base16.yaml> --size 1920x1200 [--seed N] [--kind flow|o
 ## Scenes
 
 Three looks that must read as different pictures: layered movement,
-fragments of huge off-screen geometry, large architectural planes. All
-share one principle: a hierarchy of one dominant element, quieter
+fragments of huge off-screen geometry, a fragment of one folded solid.
+All share two principles. A hierarchy of one dominant element, quieter
 secondaries and at most a small accent, with uneven spacing and a wide
-quiet area, so nothing reads as "N equal shapes placed at random". Every
-scene starts with one background polygon so no pixel is left uncovered.
+quiet area, so nothing reads as "N equal shapes placed at random". And
+the screen is a crop of something larger: focal points, centers and
+apexes lie outside it and every element enters and leaves through its
+edges, so nothing reads as a motif, logo or badge placed on the canvas.
+Every scene starts with one background polygon so no pixel is left
+uncovered.
 
 | kind    | harmony                    | construction                                                                   |
 | ------- | -------------------------- | ------------------------------------------------------------------------------ |
 | `flow`  | mono / analogous           | one master curve; 2–4 bands ride it at their own width, scale and slight wave  |
-| `orbit` | analogous, rarely compl.   | one dominant ring a screen wide or more, centered off screen; 1–2 derived      |
-| `facet` | mostly mono                | 1–2 cuts edge to edge, then a few faces cut once more; shaded as one fold      |
+| `orbit` | analogous, rarely compl.   | one dominant ring 1.5–4 screens wide, centered off screen; 1–2 derived         |
+| `facet` | mostly mono                | 1–3 ridges from an apex off screen, 0–2 creases across them; lit as one solid  |
 
 - `flow`: the master curve is two low-frequency waves and a tilt, so it
   bends once or twice and may leave the screen. Widths are one dominant,
@@ -77,18 +81,29 @@ scene starts with one background polygon so no pixel is left uncovered.
   uneven and a band may lie over its neighbor. Separation is measured
   along the screen, so bands either keep a clear gap or clearly overlap;
   a draft with free amplitudes pinched the ground between two bands into
-  crescent slivers
+  crescent slivers. The stack may overrun the top or bottom by 10–45% of
+  the height, so most scenes have a band cut by an edge; bands all shown
+  end to end read as stripes
 - `orbit`: a secondary shares the dominant's center almost exactly at a
   nearby radius; a rare accent shifts well away at a larger one. Each ring
   is one color; an accent sweep painted along part of a ring read as tape.
   Only the angles that reach the screen become quads
-- `facet`: the second long cut is either nearly parallel and well apart or
-  across the first but off center, so the two never meet in the middle;
-  a hub is what made the old fan read as the generator. Cuts stop at the
-  face they split (T-junctions read as planes, not a mesh) and are refused
-  when a half is under a quarter of its parent, under 2.5% of the image
-  or thinner than a 1:5 rectangle. Faces are convex polygons, not
-  triangles
+- `facet`: the structure comes first and the faces follow. An apex sits
+  beyond one edge of the screen; one to three ridges run out from it
+  across the view, and one or two creases cross them through a point off
+  the middle. The largest open face is cut again only while there are
+  under five faces or it holds over 45% of the image, and at most three
+  cuts radiate from the apex, since a wider fan reads as stripes; the
+  result is five to eight convex faces. Each fold is a ridge or a valley
+  (neighboring ridges mostly alternate, so the planes zigzag), a face
+  leans away from or toward every fold it borders plus a tilt away from
+  or toward the apex, and one light direction across the ridges turns the
+  leans into lightness, so the two sides of every fold are lit and shaded
+  coherently and the viewer sees part of a peak or valley whose top lies
+  outside the screen. An earlier facet cut the screen with unrelated long
+  lines and shaded each cut on its own; it read as a coarse mosaic. Cuts
+  are refused when a half is under a quarter of its parent, under 2.5% of
+  the image or thinner than a 1:5 rectangle
 - Curves are sampled so that no joint bends more than about 2.3°. That
   puts a band or ring at up to 200 quads, more than the few dozen first
   proposed, but the quads are one color and cost nothing visible; fewer
@@ -100,10 +115,12 @@ Each kind draws a few candidates per seed (four or five) and keeps the best
 by a score computed from the polygons alone: which polygon is on top at
 each point of a 48×30 grid gives the ground's share and each element's.
 Flow steers the ground toward half the image with the dominant band on
-screen; orbit toward about 72% and refuses rings crossing more than once,
-three rings in the middle, alike visible lengths or an oversized accent;
-facet wants its largest face at 25–45%, no face under 2% and no point in
-the middle where four or more faces meet. This spares the seeds that would
+screen and some band leaving through the top or bottom; orbit toward
+about 72%, refuses rings crossing more than once, three rings in the
+middle, alike visible lengths or an oversized accent, and prefers no
+crossing to one; facet wants its largest face at 25–45%, no face under
+2%, no point in the middle where four or more faces meet, and as few
+neighbors as possible that the light alone would leave alike. This spares the seeds that would
 have drawn a poor composition without touching determinism: every
 candidate draws from the scene stream.
 
@@ -166,13 +183,16 @@ wanted first).
   and the grid of owners
 - `flow`: 2–5 bands with one dominant and clearly different widths, every
   pair either clearly apart or clearly overlapping, quads bounded and never
-  thinner than the minimum
+  thinner than the minimum; at least half the scenes let a band leave
+  through the top or bottom
 - `orbit`: 2–3 rings with one dominant, every center clearly off screen,
   every ring reaching the screen in one color; the chosen scene has at
   most three colors and a bounded quad count; the crossing counter on
   known circles
-- `facet`: 5–10 faces covering the frame exactly, one at 18% or more, none
-  under 2.5% or thinner than the roundness floor; neighbors at least 0.05
+- `facet`: 5–8 faces covering the frame exactly, one at 18% or more, none
+  under 2.5% or thinner than the roundness floor; the apex off screen with
+  1–3 ridges through it, each with faces on both sides; the sides of a
+  ridge leaning apart and of a valley toward it; neighbors at least 0.05
   apart in lightness; one hue under a monochromatic palette
 - CLI: every kind can be asked for, a seed reproduces its PNG, invalid
   `--size` or a missing scheme exits non-zero
