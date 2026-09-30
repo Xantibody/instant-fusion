@@ -42,6 +42,14 @@ const WIDTH: (f64, f64) = (0.08, 0.16);
 const MIN_WIDTH: f64 = 0.03;
 /// The center keeps at least this share of the shorter side off screen
 const CLEARANCE: f64 = 0.15;
+/// The dominant ring passes through a point on the edge of the screen or
+/// up to this share of the shorter side beyond it
+const GRAZE: f64 = 0.25;
+/// No more than this share of a ring may reach the screen
+const MAX_VISIBLE: f64 = 0.2;
+/// A secondary shifts its center from the dominant by this share of the
+/// width, so the two are related without being concentric
+const SHIFT: (f64, f64) = (0.1, 0.35);
 /// Compositions drawn per seed; the best by score is kept
 const CANDIDATES: usize = 5;
 
@@ -56,9 +64,9 @@ pub fn orbit(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> Vec<P
 }
 
 /// One composition and how well it reads. Rings that cross more than
-/// once, crowd the middle, or show alike lengths read as a symbol, and
-/// even one crossing is a little less quiet than none; a scene wants one
-/// clear sweep, the rest quieter, and mostly ground
+/// once, pass through the middle, or show alike lengths read as a
+/// symbol, and even one crossing is a little less quiet than none; a
+/// scene wants one clear sweep, the rest quieter, and mostly ground
 fn candidate(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> (Vec<Polygon>, f64) {
     let rings = rings(palette, rng, width, height);
     let m = 0.02 * height;
@@ -80,7 +88,21 @@ fn candidate(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> (Vec<
     let shares = shares(&polygons, width, height);
     // Mostly ground, but not so much that the rings shrink to slivers at
     // the edges
-    let mut score = -(shares[0] - 0.72).abs() * 3.0;
+    let mut score = -(shares[0] - 0.8).abs() * 3.0;
+    // A ring shown across the middle of the screen is an arc on display
+    let middle = Box2D::new(
+        point(0.3 * width, 0.3 * height),
+        point(0.7 * width, 0.7 * height),
+    );
+    for ring in &rings {
+        let shown = midlines(ring, width, height)
+            .iter()
+            .flatten()
+            .any(|seg| seg.clipped(&middle).is_some());
+        if shown {
+            score -= 0.5;
+        }
+    }
     if shares[0] < 0.5 {
         score -= 2.0;
     }
@@ -107,20 +129,6 @@ fn candidate(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> (Vec<
                 score -= 0.5;
             }
         }
-    }
-    let middle = |q: Point| {
-        (0.3 * width..=0.7 * width).contains(&q[0]) && (0.3 * height..=0.7 * height).contains(&q[1])
-    };
-    let crowded = ranges
-        .iter()
-        .filter(|r: &&std::ops::Range<usize>| {
-            polygons[(*r).clone()]
-                .iter()
-                .any(|p| p.points.iter().any(|&q| middle(q)))
-        })
-        .count();
-    if crowded >= 3 {
-        score -= 1.0;
     }
     (polygons, score)
 }
@@ -158,16 +166,30 @@ fn off_screen(center: Point, width: f64, height: f64) -> bool {
     !((-c..=width + c).contains(&center[0]) && (-c..=height + c).contains(&center[1]))
 }
 
-/// The dominant ring: built from a point it passes through on screen, a
-/// direction and a radius, then kept only when its center is clearly off
-/// screen
+/// Whether the ring reaches the screen with no more than a small part of
+/// itself
+fn grazes(ring: &Ring, width: f64, height: f64) -> bool {
+    let visible: f64 = sweeps(ring, width, height).iter().map(|s| s.1).sum();
+    enters(ring, width, height) && visible <= MAX_VISIBLE * TAU
+}
+
+/// The dominant ring: built from a point it passes through at the edge
+/// of the screen, a direction and a radius, then kept only when its
+/// center is clearly off screen and it grazes the screen
 fn dominant(rng: &mut Rng, width: f64, height: f64) -> Ring {
     let mut ring = None;
     for _ in 0..64 {
-        let through = [
-            width * rng.range(0.15, 0.85),
-            height * rng.range(0.15, 0.85),
-        ];
+        // Through a point on the edge of the screen or a little beyond
+        // it, so the ring grazes the screen rather than being shown
+        // across it
+        let out = width.min(height) * rng.range(0.0, GRAZE);
+        let along = rng.range(-0.2, 1.2);
+        let through = match rng.below(4) {
+            0 => [width * along, -out],
+            1 => [width + out, height * along],
+            2 => [width * along, height + out],
+            _ => [-out, height * along],
+        };
         let angle = rng.range(0.0, TAU);
         let ratio = rng.range(0.7, 1.3);
         // Weighted toward the smaller radii; the largest are nearly straight
@@ -186,7 +208,7 @@ fn dominant(rng: &mut Rng, width: f64, height: f64) -> Ring {
             width: height * rng.range(WIDTH.0, WIDTH.1),
             color: Lab::new(0.0, 0.0, 0.0),
         };
-        if off_screen(center, width, height) {
+        if off_screen(center, width, height) && grazes(&candidate, width, height) {
             return candidate;
         }
         ring.get_or_insert(candidate);
@@ -194,9 +216,9 @@ fn dominant(rng: &mut Rng, width: f64, height: f64) -> Ring {
     ring.expect("one draw at least")
 }
 
-/// A ring related to the dominant one: a secondary shares its center
-/// almost exactly at a nearby radius, an accent shifts well away at a
-/// larger radius. None when no draw reaches the screen
+/// A ring related to the dominant one: a secondary shifts its center a
+/// little at a nearby radius, an accent shifts well away at a larger
+/// radius. None when no draw grazes the screen
 fn related(rng: &mut Rng, lead: &Ring, role: Role, width: f64, height: f64) -> Option<Ring> {
     for _ in 0..16 {
         let (center, rx, w) = match role {
@@ -212,14 +234,18 @@ fn related(rng: &mut Rng, lead: &Ring, role: Role, width: f64, height: f64) -> O
                     lead.width * rng.range(0.3, 0.55),
                 )
             }
-            _ => (
-                [
-                    lead.center[0] + width * rng.range(-0.08, 0.08),
-                    lead.center[1] + height * rng.range(-0.08, 0.08),
-                ],
-                lead.rx * rng.range(0.72, 1.25),
-                lead.width * rng.range(0.45, 0.8),
-            ),
+            _ => {
+                let away = rng.range(0.0, TAU);
+                let shift = width * rng.range(SHIFT.0, SHIFT.1);
+                (
+                    [
+                        lead.center[0] + shift * away.cos(),
+                        lead.center[1] + shift * away.sin(),
+                    ],
+                    lead.rx * rng.range(0.6, 1.4),
+                    lead.width * rng.range(0.45, 0.8),
+                )
+            }
         };
         let ring = Ring {
             role,
@@ -229,7 +255,7 @@ fn related(rng: &mut Rng, lead: &Ring, role: Role, width: f64, height: f64) -> O
             width: w.max(MIN_WIDTH * height),
             color: lead.color,
         };
-        if off_screen(center, width, height) && enters(&ring, width, height) {
+        if off_screen(center, width, height) && grazes(&ring, width, height) {
             return Some(ring);
         }
     }
@@ -391,6 +417,18 @@ mod tests {
                     quads.iter().all(|q| q.color == a.color),
                     "one color per ring"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn every_ring_only_grazes_the_screen() {
+        let (w, h) = (320.0, 200.0);
+        for seed in 0..200 {
+            for ring in rings(&palette(seed), &mut Rng::new(seed), w, h) {
+                let visible: f64 = sweeps(&ring, w, h).iter().map(|s| s.1).sum();
+                assert!(visible <= MAX_VISIBLE * TAU, "seed {seed}: {visible}");
+                assert!(enters(&ring, w, h), "seed {seed}");
             }
         }
     }
