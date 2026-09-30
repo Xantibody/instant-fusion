@@ -191,7 +191,8 @@ fn bands(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> (Master, 
         .collect();
     // Each band is set below the one before it by the least separation
     // measured along the screen, so two bands either keep a clear gap or
-    // clearly overlap and never pinch a crescent of ground between them.
+    // clearly overlap. AIDEV-NOTE: bands never nearly touch; a near miss
+    // pinches the ground between them into a crescent sliver.
     // An overlap is never followed by another, so a band cannot reach
     // through its neighbor to the one beyond
     let xs: Vec<f64> = (0..PROBES)
