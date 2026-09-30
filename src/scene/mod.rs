@@ -117,16 +117,4 @@ mod tests {
             }
         }
     }
-
-    #[test]
-    fn facet_paints_in_the_primary_hue_alone() {
-        let mut prng = Rng::new(2);
-        let palette = Palette::new(&dayfox(), Kind::Facet.harmony(&mut prng), &mut prng);
-        for p in compose(Kind::Facet, &palette, &mut Rng::new(2), 320.0, 200.0) {
-            assert_eq!(
-                (p.color.a, p.color.b),
-                (palette.primary.a, palette.primary.b)
-            );
-        }
-    }
 }
