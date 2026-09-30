@@ -12,6 +12,8 @@ use crate::color::Lab;
 use crate::palette::Palette;
 use crate::raster::{Point, Polygon};
 use crate::rng::Rng;
+use lyon_geom::euclid::default::Transform2D;
+use lyon_geom::{Angle, point, vector};
 
 /// The curve every band follows: two low-frequency waves and a tilt, so
 /// it bends once or twice across the screen and may leave it
@@ -95,6 +97,11 @@ const MAX_SEGMENTS: usize = 200;
 const CANDIDATES: usize = 4;
 /// Where the separation between two bands is checked
 const PROBES: usize = 96;
+/// How far the whole current may tilt either way, in radians: 25°
+const SLANT: f64 = 0.44;
+/// Two bands whose separation varies by less than this share of the
+/// height run parallel
+const PARALLEL: f64 = 0.1;
 
 fn frame(width: f64, height: f64) -> Vec<Point> {
     let m = 0.02 * height;
@@ -114,48 +121,87 @@ pub fn flow(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> Vec<Po
 
 /// One composition and how well it reads: the ground should stay the
 /// largest area without the bands drifting mostly off screen, the
-/// dominant band must actually show, and some band should leave through
-/// the top or bottom, since bands all shown end to end read as stripes
+/// dominant band must actually show, some band should leave through an
+/// edge, since bands all shown end to end read as stripes, and no two
+/// bands should run parallel
 fn candidate(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> (Vec<Polygon>, f64) {
-    let (master, bands) = bands(palette, rng, width, height);
+    // The current runs at a slant. The bands are laid out over the box
+    // that covers the screen turned back by that slant, then turned with
+    // it, so a horizontal layout never shows as one
+    let slant = rng.range(-SLANT, SLANT);
+    let (s, c) = slant.sin_cos();
+    let (bw, bh) = (
+        width * c.abs() + height * s.abs(),
+        height * c.abs() + width * s.abs(),
+    );
+    let (master, bands) = bands(palette, rng, bw, bh);
+    let turn = Transform2D::rotation(Angle::radians(slant))
+        .pre_translate(vector(-bw / 2.0, -bh / 2.0))
+        .then_translate(vector(width / 2.0, height / 2.0));
     let mut polygons = vec![Polygon {
         points: frame(width, height),
         color: palette.background,
     }];
-    let mut dominant = 0..0;
+    let mut ranges = vec![];
     for band in &bands {
         let from = polygons.len();
-        polygons.extend(ribbon(&master, band, width, height));
-        if band.role == Role::Dominant {
-            dominant = from..polygons.len();
-        }
+        polygons.extend(ribbon(&master, band, bw, bh).into_iter().map(|mut q| {
+            for p in &mut q.points {
+                let t = turn.transform_point(point(p[0], p[1]));
+                *p = [t.x, t.y];
+            }
+            q
+        }));
+        ranges.push(from..polygons.len());
     }
     let shares = shares(&polygons, width, height);
     let ground = shares[0];
-    let lead: f64 = shares[dominant].iter().sum();
+    let dominant = bands
+        .iter()
+        .position(|b| b.role == Role::Dominant)
+        .expect("one dominant band");
+    let lead: f64 = shares[ranges[dominant].clone()].iter().sum();
     let mut score = -((ground - 0.5).abs() * 2.0);
     if lead < 0.12 {
         score -= 1.0;
     }
-    if bands.iter().any(|b| leaves(&master, b, width, height)) {
+    if ranges
+        .iter()
+        .any(|r| leaves(&polygons[r.clone()], width, height))
+    {
         score += 0.3;
     } else if bands.len() >= 3 {
         score -= 0.5;
     }
+    let xs = (0..PROBES).map(|i| bw * i as f64 / (PROBES - 1) as f64);
+    for (i, a) in bands.iter().enumerate() {
+        for b in &bands[i + 1..] {
+            let (lo, hi) = xs.clone().fold((f64::MAX, f64::MIN), |(lo, hi), x| {
+                let d = a.shape(&master, x, bw) - b.shape(&master, x, bw);
+                (lo.min(d), hi.max(d))
+            });
+            if hi - lo < PARALLEL * bh {
+                score -= 0.3;
+            }
+        }
+    }
     (polygons, score)
 }
 
-/// Whether the band is cut by the top or bottom of the screen: entirely
-/// off it somewhere and on it somewhere else
-fn leaves(master: &Master, band: &Band, width: f64, height: f64) -> bool {
-    let (mut gone, mut shown) = (false, false);
-    for i in 0..PROBES {
-        let x = width * i as f64 / (PROBES - 1) as f64;
-        let c = band.center(master, x, width);
-        let half = band.width / 2.0;
-        gone |= c + half < 0.0 || c - half > height;
-        shown |= c - half < height && c + half > 0.0;
-    }
+/// Whether a band, as its quads on screen, is cut by an edge of the
+/// screen: entirely off it somewhere and on it somewhere else
+fn leaves(quads: &[Polygon], width: f64, height: f64) -> bool {
+    let gone = quads.iter().any(|q| {
+        q.points.iter().all(|p| p[0] < 0.0)
+            || q.points.iter().all(|p| p[0] > width)
+            || q.points.iter().all(|p| p[1] < 0.0)
+            || q.points.iter().all(|p| p[1] > height)
+    });
+    let shown = quads.iter().any(|q| {
+        q.points
+            .iter()
+            .any(|p| (0.0..=width).contains(&p[0]) && (0.0..=height).contains(&p[1]))
+    });
     gone && shown
 }
 
@@ -168,14 +214,13 @@ fn bands(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> (Master, 
         a2: a1 * rng.range(0.2, 0.45),
         k2: TAU / (width * rng.range(0.8, 1.1)),
         p2: rng.range(0.0, TAU),
-        drift: rng.range(-0.5, 0.5),
+        drift: rng.range(-0.3, 0.3),
     };
-    // Mostly two to four bands; five is rare
+    // Two to four bands, mostly three
     let n = match rng.below(20) {
-        0..=5 => 2,
-        6..=13 => 3,
-        14..=18 => 4,
-        _ => 5,
+        0..=6 => 2,
+        7..=14 => 3,
+        _ => 4,
     };
     let lead = height * rng.range(0.14, 0.24);
     let mut roles: Vec<(Role, f64)> = vec![(Role::Dominant, lead)];
@@ -196,8 +241,8 @@ fn bands(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> (Master, 
         .into_iter()
         .map(|(role, w)| Band {
             role,
-            scale: rng.range(0.9, 1.1),
-            va: height * rng.range(0.0, 0.025),
+            scale: rng.range(0.8, 1.2),
+            va: height * rng.range(0.0, 0.05),
             vk: TAU / (width * rng.range(0.7, 1.4)),
             vp: rng.range(0.0, TAU),
             offset: 0.0,
@@ -226,11 +271,15 @@ fn bands(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> (Master, 
         });
         let touch = bands[i - 1].offset + (bands[i - 1].width + bands[i].width) / 2.0;
         let narrow = bands[i - 1].width.min(bands[i].width);
-        overlapped = !overlapped && rng.coin(0.3);
+        // Only bands shaped alike may overlap: two that differ by more
+        // than a third of the narrower would swap sides and cross
+        overlapped = !overlapped && hi - lo <= 0.35 * narrow && rng.coin(0.3);
+        // A little more than the least, since the extremes between two
+        // probes go unmeasured
         bands[i].offset = if overlapped {
-            touch - narrow * rng.range(OVERLAP.0, OVERLAP.1) - hi
+            touch - narrow * rng.range(OVERLAP.0 + 0.05, OVERLAP.1) - hi
         } else {
-            touch + height * rng.range(MIN_GAP, 0.3) - lo
+            touch + height * rng.range(MIN_GAP + 0.01, 0.3) - lo
         };
     }
     // The whole stack sits at a random height and may run off the top or
@@ -294,7 +343,7 @@ mod tests {
         for seed in 0..200 {
             let palette = palette(seed);
             let (_, bands) = bands(&palette, &mut Rng::new(seed), w, h);
-            assert!((2..=5).contains(&bands.len()), "seed {seed}");
+            assert!((2..=4).contains(&bands.len()), "seed {seed}");
             assert_eq!(bands.iter().filter(|b| b.role == Role::Dominant).count(), 1);
             let widest = bands[0].width;
             let narrowest = bands.last().unwrap().width;
@@ -318,27 +367,32 @@ mod tests {
                 for b in &bands[i + 1..] {
                     let narrow = a.width.min(b.width);
                     let (mut gap, mut over) = (true, true);
+                    let (mut lo, mut hi) = (f64::MAX, f64::MIN);
                     for k in 0..=400 {
                         let x = -0.02 * h + (w + 0.04 * h) * k as f64 / 400.0;
                         let d = (a.center(&master, x, w) - b.center(&master, x, w)).abs()
                             - (a.width + b.width) / 2.0;
                         gap &= d >= MIN_GAP * h - 1e-6;
                         over &= d <= -OVERLAP.0 * narrow + 1e-6;
+                        lo = lo.min(d);
+                        hi = hi.max(d);
                     }
-                    assert!(gap || over, "seed {seed}");
+                    assert!(
+                        gap || over,
+                        "seed {seed}: widths {} and {}, separation {lo} to {hi}",
+                        a.width,
+                        b.width
+                    );
                 }
             }
         }
     }
 
-    /// The bands of a scene as runs of quads, each run left to right
-    fn runs(polygons: &[Polygon], h: f64) -> Vec<&[Polygon]> {
-        let starts: Vec<usize> = polygons
-            .iter()
-            .enumerate()
-            .skip(1)
-            .filter(|(_, p)| p.points[0][0] == -0.02 * h)
-            .map(|(i, _)| i)
+    /// The bands of a scene as runs of quads: within a band each quad
+    /// starts on the edge the one before it ends on
+    fn runs(polygons: &[Polygon]) -> Vec<&[Polygon]> {
+        let starts: Vec<usize> = (1..polygons.len())
+            .filter(|&i| i == 1 || polygons[i].points[0] != polygons[i - 1].points[1])
             .collect();
         starts
             .iter()
@@ -353,16 +407,7 @@ mod tests {
         let mut left = 0;
         for seed in 0..100 {
             let polygons = flow(&palette(seed), &mut Rng::new(seed), w, h);
-            let leaves = runs(&polygons, h).into_iter().any(|run| {
-                let on = |q: &Polygon| (0.0..=w).contains(&q.points[0][0]);
-                let gone = run
-                    .iter()
-                    .any(|q| on(q) && (q.points[3][1] < 0.0 || q.points[0][1] > h));
-                let shown = run
-                    .iter()
-                    .any(|q| on(q) && q.points[0][1] < h && q.points[3][1] > 0.0);
-                gone && shown
-            });
+            let leaves = runs(&polygons).into_iter().any(|run| leaves(run, w, h));
             left += leaves as usize;
         }
         assert!(left >= 50, "{left} of 100 scenes let a band leave");
@@ -373,13 +418,14 @@ mod tests {
         let (w, h) = (320.0, 200.0);
         for seed in 0..100 {
             let polygons = flow(&palette(seed), &mut Rng::new(seed), w, h);
-            assert!(polygons.len() <= 1 + 5 * MAX_SEGMENTS, "seed {seed}");
+            assert!(polygons.len() <= 1 + 4 * MAX_SEGMENTS, "seed {seed}");
             for p in &polygons[1..] {
                 let [u0, u1, l1, l0] = p.points[..] else {
                     panic!("seed {seed}: {:?}", p.points)
                 };
-                assert!(l0[1] - u0[1] >= MIN_WIDTH * h - 1e-9, "seed {seed}");
-                assert!(l1[1] - u1[1] >= MIN_WIDTH * h - 1e-9, "seed {seed}");
+                let thick = |a: Point, b: Point| (a[0] - b[0]).hypot(a[1] - b[1]);
+                assert!(thick(u0, l0) >= MIN_WIDTH * h - 1e-9, "seed {seed}");
+                assert!(thick(u1, l1) >= MIN_WIDTH * h - 1e-9, "seed {seed}");
             }
         }
     }
