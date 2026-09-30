@@ -35,7 +35,7 @@ impl Kind {
                 }
             }
             Kind::Orbit => {
-                if rng.coin(0.5) {
+                if rng.coin(0.7) {
                     Harmony::Analogous
                 } else {
                     Harmony::MutedComplementary

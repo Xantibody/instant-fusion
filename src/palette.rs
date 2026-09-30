@@ -30,7 +30,7 @@ pub struct Palette {
     pub background: Lab,
     /// The main figure color
     pub primary: Lab,
-    /// A second figure color, close to the primary
+    /// A quieter figure color, between the ground and the primary
     pub secondary: Lab,
     /// For small areas only: a scene keeps it under about 15% of the image
     pub accent: Lab,
@@ -48,12 +48,14 @@ impl Palette {
         let bright = scheme.base[0].l > 0.6;
         let anchor = scheme.base[8 + rng.below(8)];
         let jitter = rng.range(-0.02, 0.02) as f32;
-        // Lightness steps outward from the background; the figure colors
-        // are darker than a pale ground and lighter than a dim one
+        // Lightness steps outward from the background, in the order the
+        // colors are meant to carry weight: the secondary is the quietest
+        // figure, the primary the main one, the accent the strongest and
+        // the smallest. Darker than a pale ground, lighter than a dim one
         let (bg, p, s, a) = if bright {
-            (0.91, 0.74, 0.64, 0.56)
+            (0.91, 0.70, 0.80, 0.58)
         } else {
-            (0.21, 0.35, 0.45, 0.55)
+            (0.21, 0.38, 0.30, 0.52)
         };
         let sign = if rng.coin(0.5) { 1.0 } else { -1.0 };
         let (turn_s, turn_a, chroma_a) = match harmony {
@@ -68,6 +70,8 @@ impl Palette {
                 0.045,
             ),
         };
+        // On a dim ground a colorful accent glows; keep it calmer there
+        let chroma_a = if bright { chroma_a } else { chroma_a * 0.75 };
         let color = |l: f32, turn: f32, chroma: f32| {
             anchor
                 .rotate_hue(radians(turn))
@@ -177,14 +181,21 @@ mod tests {
     }
 
     #[test]
-    fn the_figure_colors_stand_off_the_background_and_each_other() {
+    fn lightness_steps_from_the_ground_through_secondary_and_primary_to_accent() {
         for palette in all_palettes() {
             let [bg, p, s, a] = palette.colors().map(|c| c.l);
-            assert!((p - bg).abs() >= 0.12, "{palette:?}");
-            assert!(
-                (s - p).abs() >= 0.06 && (a - s).abs() >= 0.06,
-                "{palette:?}"
-            );
+            let off = |c: f32| (c - bg).abs();
+            assert!(off(s) >= 0.08 && off(p) - off(s) >= 0.06, "{palette:?}");
+            assert!(off(a) - off(p) >= 0.06, "{palette:?}");
+        }
+    }
+
+    #[test]
+    fn the_accent_is_calmer_on_a_dark_scheme() {
+        for harmony in HARMONIES {
+            let pale = Palette::new(&dayfox(), harmony, &mut Rng::new(4));
+            let dim = Palette::new(&dark(), harmony, &mut Rng::new(4));
+            assert!(dim.accent.chroma() < pale.accent.chroma(), "{harmony:?}");
         }
     }
 
