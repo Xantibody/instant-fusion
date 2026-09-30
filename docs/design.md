@@ -54,7 +54,9 @@ instant-fusion --scheme <base16.yaml> --size 1920x1200 [--seed N] [--kind flow|o
   lighter than a dim one
 - Chroma is capped at 0.07 everywhere, and the accent loses a quarter of
   it on a dark scheme, so a loud scheme still gives a quiet wallpaper
-- Mix in OKLab (sRGB interpolation muddies the midpoints)
+- Mix in OKLab (sRGB interpolation muddies the midpoints). Facet is
+  monochromatic always: its faces differ in lightness only, since that
+  lightness is the light on their planes
 
 ## Scenes
 
@@ -71,39 +73,48 @@ uncovered.
 
 | kind    | harmony                    | construction                                                                   |
 | ------- | -------------------------- | ------------------------------------------------------------------------------ |
-| `flow`  | mono / analogous           | one master curve; 2–4 bands ride it at their own width, scale and slight wave  |
-| `orbit` | analogous, rarely compl.   | one dominant ring 1.5–4 screens wide, centered off screen; 1–2 derived         |
-| `facet` | mostly mono                | 1–3 ridges from an apex off screen, 0–2 creases across them; lit as one solid  |
+| `flow`  | mono / analogous           | one master curve at a slant; 2–4 bands ride it at their own width and wave     |
+| `orbit` | analogous, rarely compl.   | one ring 1.5–4 screens wide grazing the screen, centered off it; 1–2 derived   |
+| `facet` | mono                       | one ridge across the screen, 0–2 creases across it; planes lit by their normals |
 
 - `flow`: the master curve is two low-frequency waves and a tilt, so it
-  bends once or twice and may leave the screen. Widths are one dominant,
-  secondaries at 55–80% of it and an optional narrow accent; gaps are
-  uneven and a band may lie over its neighbor. Separation is measured
-  along the screen, so bands either keep a clear gap or clearly overlap;
-  a draft with free amplitudes pinched the ground between two bands into
-  crescent slivers. The stack may overrun the top or bottom by 10–45% of
-  the height, so most scenes have a band cut by an edge; bands all shown
-  end to end read as stripes
-- `orbit`: a secondary shares the dominant's center almost exactly at a
-  nearby radius; a rare accent shifts well away at a larger one. Each ring
-  is one color; an accent sweep painted along part of a ring read as tape.
-  Only the angles that reach the screen become quads
-- `facet`: the structure comes first and the faces follow. An apex sits
-  beyond one edge of the screen; one to three ridges run out from it
-  across the view, and one or two creases cross them through a point off
-  the middle. The largest open face is cut again only while there are
-  under five faces or it holds over 45% of the image, and at most three
-  cuts radiate from the apex, since a wider fan reads as stripes; the
-  result is five to eight convex faces. Each fold is a ridge or a valley
-  (neighboring ridges mostly alternate, so the planes zigzag), a face
-  leans away from or toward every fold it borders plus a tilt away from
-  or toward the apex, and one light direction across the ridges turns the
-  leans into lightness, so the two sides of every fold are lit and shaded
-  coherently and the viewer sees part of a peak or valley whose top lies
-  outside the screen. An earlier facet cut the screen with unrelated long
-  lines and shaded each cut on its own; it read as a coarse mosaic. Cuts
-  are refused when a half is under a quarter of its parent, under 2.5% of
-  the image or thinner than a 1:5 rectangle
+  bends once or twice and may leave the screen. A band scales it by
+  0.8–1.2 and adds a wave of up to 5% of the height, so no two are
+  parallel copies. Widths are one dominant, secondaries at 55–80% of it
+  and an optional narrow accent; gaps are uneven and a band may lie over
+  its neighbor when the two are shaped alike (bands that differ more would
+  swap sides and cross). Separation is measured along the screen, so bands
+  either keep a clear gap or clearly overlap; a draft with free amplitudes
+  pinched the ground between two bands into crescent slivers. The whole
+  current runs at a slant of up to 25° either way, and the stack may
+  overrun the edges by 10–45% of the height, so nearly every scene has a
+  band cut by an edge; bands all shown end to end read as stripes
+- `orbit`: the dominant ring passes through a point on the edge of the
+  screen or a little beyond it, and a ring is kept only when no more than
+  a fifth of it reaches the screen, so what shows is the part of a huge
+  ellipse that happens to pass; a ring built through a point inside the
+  screen was an arc on display. A secondary shifts its center by 10–35%
+  of the width at 0.6–1.4 times the radius; a rare accent shifts well
+  away at a larger one. Each ring is one color; an accent sweep painted
+  along part of a ring read as tape. Only the sweeps that reach the screen
+  become quads, cut by lyon_geom's flattening to a tolerance of 0.3 px
+- `facet`: the structure comes first and the faces follow. One ridge
+  crosses the middle third of the screen at any angle with a plane on
+  either side; one or two creases cross it through a point off the
+  middle, and the largest open face takes a crease of its own only while
+  there are under five faces or it holds over 45% of the image; no three
+  folds share a point. The result is five to eight convex faces. Each
+  face carries a 3D normal: the first plane leans a little, and a cut
+  turns the two halves 20–45° apart about the fold line, away from each
+  other across a ridge and toward each other across a valley. One light
+  20–40° over the screen gives each face its lightness from that normal
+  and nothing else, so neighbors differ because they face the light
+  differently. Two earlier facets are gone: unrelated long cuts shaded on
+  their own read as a mosaic, and ridges fanning from one off-screen apex
+  read as a shard of that fan; both also pushed alike neighbors apart in
+  lightness after the fact, which made polygons of the planes. Cuts are
+  refused when a half is under a quarter of its parent, under 2.5% of the
+  image or thinner than a 1:5 rectangle
 - Curves are sampled so that no joint bends more than about 2.3°. That
   puts a band or ring at up to 200 quads, more than the few dozen first
   proposed, but the quads are one color and cost nothing visible; fewer
@@ -115,14 +126,14 @@ Each kind draws a few candidates per seed (four or five) and keeps the best
 by a score computed from the polygons alone: which polygon is on top at
 each point of a 48×30 grid gives the ground's share and each element's.
 Flow steers the ground toward half the image with the dominant band on
-screen and some band leaving through the top or bottom; orbit toward
-about 72%, refuses rings crossing more than once, three rings in the
-middle, alike visible lengths or an oversized accent, and prefers no
-crossing to one; facet wants its largest face at 25–45%, no face under
-2%, no point in the middle where four or more faces meet, and as few
-neighbors as possible that the light alone would leave alike. This spares the seeds that would
-have drawn a poor composition without touching determinism: every
-candidate draws from the scene stream.
+screen, some band leaving through an edge and no two bands parallel;
+orbit toward about 80%, refuses rings crossing more than once, a ring
+through the middle, alike visible lengths or an oversized accent, and
+prefers no crossing to one; facet wants its largest face at 25–45%, no
+face under 2%, no point in the middle where four or more faces meet, and
+as few neighbors as possible that the light leaves alike. This spares
+the seeds that would have drawn a poor composition without touching
+determinism: every candidate draws from the scene stream.
 
 Removed: the `terrain` and `lowpoly` mesh kinds (fields of small
 triangles, the crowded look the set above avoids) and the facade's seams
@@ -153,7 +164,12 @@ wanted first).
 
 ## Technology
 
-- Rust. Dependencies limited to `clap` (derive), `png` and `anyhow`
+- Rust. Dependencies: `clap` (derive), `png`, `anyhow`, `palette` for the
+  OKLab conversions and `lyon_geom` for curve flattening and transforms;
+  the composition, the RNG and the convex rasterizer stay in the crate.
+  `kurbo` would have served in place of `lyon_geom`; `geo` was left out
+  because it pulls in far more than the four polygon helpers it would
+  replace, `tiny-skia` because it would replace the rasterizer itself
 - The base16 YAML is a flat list of `key: "hex"`, so it is parsed by hand
   (no serde_yaml)
 - The seed must reproduce the same image, so the RNG is an in-house
@@ -181,18 +197,20 @@ wanted first).
 - Scenes, for every kind over many seeds: same seed → same polygons, every
   polygon convex with an area, screen fully covered; the candidate picker
   and the grid of owners
-- `flow`: 2–5 bands with one dominant and clearly different widths, every
+- `flow`: 2–4 bands with one dominant and clearly different widths, every
   pair either clearly apart or clearly overlapping, quads bounded and never
   thinner than the minimum; at least half the scenes let a band leave
-  through the top or bottom
+  through an edge
 - `orbit`: 2–3 rings with one dominant, every center clearly off screen,
-  every ring reaching the screen in one color; the chosen scene has at
+  every ring reaching the screen with at most a fifth of itself, in one
+  color; the chosen scene has at
   most three colors and a bounded quad count; the crossing counter on
   known circles
 - `facet`: 5–8 faces covering the frame exactly, one at 18% or more, none
-  under 2.5% or thinner than the roundness floor; the apex off screen with
-  1–3 ridges through it, each with faces on both sides; the sides of a
-  ridge leaning apart and of a valley toward it; neighbors at least 0.05
-  apart in lightness; one hue under a monochromatic palette
+  under 2.5% or thinner than the roundness floor; the ridge crossing the
+  screen with faces on both sides and no three folds through one point;
+  the halves of a cut turned the fold's angle apart, away across a ridge
+  and toward across a valley; the shade being the light on the normal;
+  one hue and one chroma across the faces
 - CLI: every kind can be asked for, a seed reproduces its PNG, invalid
   `--size` or a missing scheme exits non-zero
