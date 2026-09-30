@@ -29,7 +29,9 @@ pub fn pick_kind(seed: u64) -> Kind {
 
 /// 8-bit RGB rows of one wallpaper
 pub fn generate(scheme: &Scheme, kind: Kind, seed: u64, width: usize, height: usize) -> Vec<u8> {
-    let palette = Palette::new(scheme, &mut Rng::new(seed ^ PALETTE_STREAM));
+    let mut prng = Rng::new(seed ^ PALETTE_STREAM);
+    let palette = Palette::new(scheme, kind.harmony(&mut prng), &mut prng);
+
     let polygons = scene::compose(
         kind,
         &palette,

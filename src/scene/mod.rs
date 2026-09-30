@@ -3,7 +3,7 @@
 
 mod facet;
 
-use crate::palette::Palette;
+use crate::palette::{Harmony, Palette};
 use crate::raster::Polygon;
 use crate::rng::Rng;
 
@@ -15,6 +15,21 @@ pub enum Kind {
 
 impl Kind {
     pub const ALL: [Kind; 1] = [Kind::Facet];
+
+    /// The color harmony a seed picks for this kind. Facet lives on
+    /// lightness and stays mostly in one hue; orbit is the one place a
+    /// dull complementary accent is wanted
+    pub fn harmony(self, rng: &mut Rng) -> Harmony {
+        match self {
+            Kind::Facet => {
+                if rng.coin(0.75) {
+                    Harmony::Monochromatic
+                } else {
+                    Harmony::Analogous
+                }
+            }
+        }
+    }
 
     pub fn name(self) -> &'static str {
         match self {
@@ -42,7 +57,8 @@ mod tests {
     use crate::fixtures::dayfox;
 
     fn scene(kind: Kind, seed: u64) -> Vec<Polygon> {
-        let palette = Palette::new(&dayfox(), &mut Rng::new(seed));
+        let mut prng = Rng::new(seed);
+        let palette = Palette::new(&dayfox(), kind.harmony(&mut prng), &mut prng);
         compose(kind, &palette, &mut Rng::new(seed), 320.0, 200.0)
     }
 
@@ -103,10 +119,14 @@ mod tests {
     }
 
     #[test]
-    fn facet_paints_in_the_tint_alone() {
-        let palette = Palette::new(&dayfox(), &mut Rng::new(2));
+    fn facet_paints_in_the_primary_hue_alone() {
+        let mut prng = Rng::new(2);
+        let palette = Palette::new(&dayfox(), Kind::Facet.harmony(&mut prng), &mut prng);
         for p in compose(Kind::Facet, &palette, &mut Rng::new(2), 320.0, 200.0) {
-            assert_eq!((p.color.a, p.color.b), (palette.tint.a, palette.tint.b));
+            assert_eq!(
+                (p.color.a, p.color.b),
+                (palette.primary.a, palette.primary.b)
+            );
         }
     }
 }

@@ -1,7 +1,6 @@
 //! A paneled facade: large irregular triangles in one hue, dark seams
 //! between them, and a few panels sunk into the wall.
 
-use crate::color::Lab;
 use crate::palette::Palette;
 use crate::raster::{Point, Polygon};
 use crate::rng::Rng;
@@ -26,7 +25,7 @@ pub fn facet(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> Vec<P
     } else {
         (0.20, 0.58, 0.09, 0.07)
     };
-    let paint = |l: f64| Lab::new(l as f32, palette.tint.a, palette.tint.b);
+    let paint = |l: f64| palette.primary.with_lightness(l as f32);
 
     let tris = panels(rng, width, height);
     let mut polygons = vec![];
