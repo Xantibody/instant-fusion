@@ -113,8 +113,9 @@ pub fn flow(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> Vec<Po
 }
 
 /// One composition and how well it reads: the ground should stay the
-/// largest area without the bands drifting mostly off screen, and the
-/// dominant band must actually show
+/// largest area without the bands drifting mostly off screen, the
+/// dominant band must actually show, and some band should leave through
+/// the top or bottom, since bands all shown end to end read as stripes
 fn candidate(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> (Vec<Polygon>, f64) {
     let (master, bands) = bands(palette, rng, width, height);
     let mut polygons = vec![Polygon {
@@ -136,7 +137,26 @@ fn candidate(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> (Vec<
     if lead < 0.12 {
         score -= 1.0;
     }
+    if bands.iter().any(|b| leaves(&master, b, width, height)) {
+        score += 0.3;
+    } else if bands.len() >= 3 {
+        score -= 0.5;
+    }
     (polygons, score)
+}
+
+/// Whether the band is cut by the top or bottom of the screen: entirely
+/// off it somewhere and on it somewhere else
+fn leaves(master: &Master, band: &Band, width: f64, height: f64) -> bool {
+    let (mut gone, mut shown) = (false, false);
+    for i in 0..PROBES {
+        let x = width * i as f64 / (PROBES - 1) as f64;
+        let c = band.center(master, x, width);
+        let half = band.width / 2.0;
+        gone |= c + half < 0.0 || c - half > height;
+        shown |= c - half < height && c + half > 0.0;
+    }
+    gone && shown
 }
 
 fn bands(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> (Master, Vec<Band>) {
@@ -148,7 +168,7 @@ fn bands(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> (Master, 
         a2: a1 * rng.range(0.2, 0.45),
         k2: TAU / (width * rng.range(0.8, 1.1)),
         p2: rng.range(0.0, TAU),
-        drift: rng.range(-0.35, 0.35),
+        drift: rng.range(-0.5, 0.5),
     };
     // Mostly two to four bands; five is rare
     let n = match rng.below(20) {
@@ -213,15 +233,15 @@ fn bands(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> (Master, 
             touch + height * rng.range(MIN_GAP, 0.3) - lo
         };
     }
-    // The whole stack sits at a random height; it may run off the top or
-    // bottom, which is how a band leaves the screen
+    // The whole stack sits at a random height and may run off the top or
+    // bottom by a varying amount, which is how a band leaves the screen
     let (top, bottom) = bands.iter().fold((f64::MAX, f64::MIN), |(t, b), band| {
         xs.iter().fold((t, b), |(t, b), &x| {
             let c = band.center(&master, x, width);
             (t.min(c - band.width / 2.0), b.max(c + band.width / 2.0))
         })
     });
-    let slack = 0.15 * height;
+    let slack = height * rng.range(0.1, 0.45);
     let (lo, hi) = (-slack - top, height + slack - (bottom - top) - top);
     let shift = lo.min(hi) + (lo.max(hi) - lo.min(hi)) * rng.unit();
     for band in &mut bands {
@@ -309,6 +329,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The bands of a scene as runs of quads, each run left to right
+    fn runs(polygons: &[Polygon], h: f64) -> Vec<&[Polygon]> {
+        let starts: Vec<usize> = polygons
+            .iter()
+            .enumerate()
+            .skip(1)
+            .filter(|(_, p)| p.points[0][0] == -0.02 * h)
+            .map(|(i, _)| i)
+            .collect();
+        starts
+            .iter()
+            .enumerate()
+            .map(|(k, &s)| &polygons[s..starts.get(k + 1).copied().unwrap_or(polygons.len())])
+            .collect()
+    }
+
+    #[test]
+    fn most_scenes_let_a_band_leave_through_the_top_or_bottom() {
+        let (w, h) = (320.0, 200.0);
+        let mut left = 0;
+        for seed in 0..100 {
+            let polygons = flow(&palette(seed), &mut Rng::new(seed), w, h);
+            let leaves = runs(&polygons, h).into_iter().any(|run| {
+                let on = |q: &Polygon| (0.0..=w).contains(&q.points[0][0]);
+                let gone = run
+                    .iter()
+                    .any(|q| on(q) && (q.points[3][1] < 0.0 || q.points[0][1] > h));
+                let shown = run
+                    .iter()
+                    .any(|q| on(q) && q.points[0][1] < h && q.points[3][1] > 0.0);
+                gone && shown
+            });
+            left += leaves as usize;
+        }
+        assert!(left >= 50, "{left} of 100 scenes let a band leave");
     }
 
     #[test]
