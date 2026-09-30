@@ -1,6 +1,7 @@
 //! Scenes: a kind of wallpaper, built from a palette and a seed as flat
 //! convex polygons in paint order. Nothing here touches pixels.
 
+mod facet;
 mod mesh;
 
 use crate::palette::Palette;
@@ -9,6 +10,8 @@ use crate::rng::Rng;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
+    /// A paneled facade in one hue, with seams and sunk panels
+    Facet,
     /// Strong low-poly relief under a linear gradient
     Terrain,
     /// Faint low-poly relief under colors blended around a pale center
@@ -16,7 +19,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 2] = [Kind::Terrain, Kind::Lowpoly];
+    pub const ALL: [Kind; 3] = [Kind::Facet, Kind::Terrain, Kind::Lowpoly];
 }
 
 /// Polygons covering the `width` × `height` image, in paint order
@@ -28,6 +31,7 @@ pub fn compose(
     height: f64,
 ) -> Vec<Polygon> {
     match kind {
+        Kind::Facet => facet::facet(palette, rng, width, height),
         Kind::Terrain => mesh::mesh(palette, rng, width, height, mesh::Relief::Strong),
         Kind::Lowpoly => mesh::mesh(palette, rng, width, height, mesh::Relief::Faint),
     }
@@ -96,6 +100,14 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn facet_paints_in_the_tint_alone() {
+        let palette = Palette::new(&dayfox(), &mut Rng::new(2));
+        for p in compose(Kind::Facet, &palette, &mut Rng::new(2), 320.0, 200.0) {
+            assert_eq!((p.color.a, p.color.b), (palette.tint.a, palette.tint.b));
         }
     }
 }
