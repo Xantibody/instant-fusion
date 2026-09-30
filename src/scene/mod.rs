@@ -229,7 +229,11 @@ mod tests {
                         .collect();
                     let convex = turns.iter().all(|&t| t >= 0.0) || turns.iter().all(|&t| t <= 0.0);
                     assert!(convex, "{kind:?} seed {seed}: {:?}", p.points);
-                    assert!(turns.iter().any(|&t| t != 0.0));
+                    assert!(
+                        turns.iter().any(|&t| t != 0.0),
+                        "{kind:?} seed {seed}: {:?}",
+                        p.points
+                    );
                 }
             }
         }
