@@ -88,7 +88,7 @@ fn a_seed_reproduces_its_wallpaper_and_is_reported() {
 
 #[test]
 fn every_kind_can_be_asked_for() {
-    for kind in ["flow", "facet"] {
+    for kind in ["flow", "orbit", "facet"] {
         let out = run(&[
             "--scheme", DAYFOX, "--size", "64x40", "--kind", kind, "-o", "-",
         ]);

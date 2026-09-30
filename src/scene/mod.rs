@@ -3,6 +3,7 @@
 
 mod facet;
 mod flow;
+mod orbit;
 
 use crate::palette::{Harmony, Palette};
 use crate::raster::Polygon;
@@ -12,12 +13,14 @@ use crate::rng::Rng;
 pub enum Kind {
     /// A few wide, smooth bands sweeping across the screen
     Flow,
+    /// A few sweeps of rings far larger than the screen, centered off it
+    Orbit,
     /// A few large planes told apart by lightness alone
     Facet,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 2] = [Kind::Flow, Kind::Facet];
+    pub const ALL: [Kind; 3] = [Kind::Flow, Kind::Orbit, Kind::Facet];
 
     /// The color harmony a seed picks for this kind. Facet lives on
     /// lightness and stays mostly in one hue; orbit is the one place a
@@ -29,6 +32,13 @@ impl Kind {
                     Harmony::Monochromatic
                 } else {
                     Harmony::Analogous
+                }
+            }
+            Kind::Orbit => {
+                if rng.coin(0.5) {
+                    Harmony::Analogous
+                } else {
+                    Harmony::MutedComplementary
                 }
             }
             Kind::Facet => {
@@ -44,6 +54,7 @@ impl Kind {
     pub fn name(self) -> &'static str {
         match self {
             Kind::Flow => "flow",
+            Kind::Orbit => "orbit",
             Kind::Facet => "facet",
         }
     }
@@ -59,6 +70,7 @@ pub fn compose(
 ) -> Vec<Polygon> {
     match kind {
         Kind::Flow => flow::flow(palette, rng, width, height),
+        Kind::Orbit => orbit::orbit(palette, rng, width, height),
         Kind::Facet => facet::facet(palette, rng, width, height),
     }
 }
