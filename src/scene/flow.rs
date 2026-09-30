@@ -1,139 +1,248 @@
-//! Flow: two to five wide, smooth bands sweeping across the screen. All
-//! follow one wave, each at its own height and width, so they read as
-//! one current rather than a tangle. A band is the wave sampled
-//! along x and cut into vertical-sided quads of one color; the rasterizer
-//! never sees a curve.
+//! Flow: layered movement. One master curve, low in frequency, sweeps
+//! across the screen; two to four bands ride it at their own offsets,
+//! widths and slight waves of their own, so they belong to one current
+//! without being copies of each other. A band is sampled along x and cut
+//! into vertical-sided quads of one color; the rasterizer never sees a
+//! curve.
 
 use std::f64::consts::TAU;
 
+use super::{best, shares};
 use crate::color::Lab;
 use crate::palette::Palette;
 use crate::raster::{Point, Polygon};
 use crate::rng::Rng;
 
-/// The wave every band of one scene follows
-struct Wave {
-    wavelength: f64,
-    phase: f64,
-    /// Rise of the centerline per unit of x
+/// The curve every band follows: two low-frequency waves and a tilt, so
+/// it bends once or twice across the screen and may leave it
+struct Master {
+    a1: f64,
+    k1: f64,
+    p1: f64,
+    a2: f64,
+    k2: f64,
+    p2: f64,
     drift: f64,
 }
 
+impl Master {
+    fn at(&self, x: f64, width: f64) -> f64 {
+        self.a1 * (self.k1 * x + self.p1).sin()
+            + self.a2 * (self.k2 * x + self.p2).sin()
+            + self.drift * (x - width / 2.0)
+    }
+
+    fn slope(&self, x: f64) -> f64 {
+        self.a1 * self.k1 * (self.k1 * x + self.p1).cos()
+            + self.a2 * self.k2 * (self.k2 * x + self.p2).cos()
+            + self.drift
+    }
+
+    /// An upper bound on the bend anywhere along it
+    fn curvature(&self) -> f64 {
+        self.a1 * self.k1 * self.k1 + self.a2 * self.k2 * self.k2
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Role {
+    /// The one wide band the eye lands on first
+    Dominant,
+    /// Narrower, quieter in color
+    Secondary,
+    /// Narrowest, in the accent color
+    Accent,
+}
+
 struct Band {
-    /// Height of the centerline at the middle of the screen
-    base: f64,
-    amplitude: f64,
+    role: Role,
+    /// Multiplies the master's swing
+    scale: f64,
+    /// A slight wave of its own, so no two bands are parallel
+    va: f64,
+    vk: f64,
+    vp: f64,
+    offset: f64,
     /// Thickness measured across the band
     width: f64,
     color: Lab,
 }
 
-/// Band widths as a share of the height
-const MIN_WIDTH: f64 = 0.08;
-const MAX_WIDTH: f64 = 0.25;
-/// An accent band is kept narrow so the accent stays a small share of
-/// the image
-const ACCENT_WIDTH: f64 = 0.10;
-/// Together the bands never take more than this share of the height, so
-/// a good part of the ground stays quiet
-const MAX_TOTAL_WIDTH: f64 = 0.6;
-/// Quads per band at the tightest curve
-const MAX_SEGMENTS: usize = 160;
-/// The least ground left between two bands, as a share of the height
-const MIN_GAP: f64 = 0.06;
-/// How far a band may stray from the shared amplitude. Kept well under
-/// the gap, so neighbors never meet
-const AMPLITUDE_PLAY: f64 = 0.08;
-
-pub fn flow(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> Vec<Polygon> {
-    let m = 0.02 * height;
-    let mut polygons = vec![Polygon {
-        points: vec![
-            [-m, -m],
-            [width + m, -m],
-            [width + m, height + m],
-            [-m, height + m],
-        ],
-        color: palette.background,
-    }];
-    let (wave, bands) = bands(palette, rng, width, height);
-    for band in &bands {
-        polygons.extend(ribbon(&wave, band, width, height));
+impl Band {
+    fn shape(&self, m: &Master, x: f64, width: f64) -> f64 {
+        m.at(x, width) * self.scale + self.va * (self.vk * x + self.vp).sin()
     }
-    polygons
+    fn center(&self, m: &Master, x: f64, width: f64) -> f64 {
+        self.shape(m, x, width) + self.offset
+    }
+    fn slope(&self, m: &Master, x: f64) -> f64 {
+        m.slope(x) * self.scale + self.va * self.vk * (self.vk * x + self.vp).cos()
+    }
+    fn curvature(&self, m: &Master) -> f64 {
+        m.curvature() * self.scale + self.va * self.vk * self.vk
+    }
 }
 
-fn bands(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> (Wave, Vec<Band>) {
-    let wave = Wave {
-        wavelength: width * rng.range(1.0, 2.2),
-        phase: rng.range(0.0, TAU),
-        drift: rng.range(-0.15, 0.15),
-    };
-    let n = 2 + rng.below(4);
-    let amplitude = height * rng.range(0.08, 0.2);
-    let mut widths: Vec<f64> = (0..n).map(|_| rng.range(MIN_WIDTH, MAX_WIDTH)).collect();
-    // Only the part above the minimum is squeezed, so no band drops
-    // under it
-    let (total, floor) = (widths.iter().sum::<f64>(), n as f64 * MIN_WIDTH);
-    if total > MAX_TOTAL_WIDTH {
-        let k = (MAX_TOTAL_WIDTH - floor) / (total - floor);
-        for w in &mut widths {
-            *w = MIN_WIDTH + (*w - MIN_WIDTH) * k;
+/// No band is thinner than this share of the height
+const MIN_WIDTH: f64 = 0.06;
+/// The least ground left between two bands, as a share of the height
+const MIN_GAP: f64 = 0.05;
+/// When a band lies over its neighbor, by this share of the narrower one
+const OVERLAP: (f64, f64) = (0.35, 0.6);
+/// Quads per band at the tightest curve
+const MAX_SEGMENTS: usize = 200;
+/// Compositions drawn per seed; the best by score is kept
+const CANDIDATES: usize = 4;
+/// Where the separation between two bands is checked
+const PROBES: usize = 96;
+
+fn frame(width: f64, height: f64) -> Vec<Point> {
+    let m = 0.02 * height;
+    vec![
+        [-m, -m],
+        [width + m, -m],
+        [width + m, height + m],
+        [-m, height + m],
+    ]
+}
+
+pub fn flow(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> Vec<Polygon> {
+    best(rng, CANDIDATES, |rng| {
+        candidate(palette, rng, width, height)
+    })
+}
+
+/// One composition and how well it reads: the ground should stay the
+/// largest area without the bands drifting mostly off screen, and the
+/// dominant band must actually show
+fn candidate(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> (Vec<Polygon>, f64) {
+    let (master, bands) = bands(palette, rng, width, height);
+    let mut polygons = vec![Polygon {
+        points: frame(width, height),
+        color: palette.background,
+    }];
+    let mut dominant = 0..0;
+    for band in &bands {
+        let from = polygons.len();
+        polygons.extend(ribbon(&master, band, width, height));
+        if band.role == Role::Dominant {
+            dominant = from..polygons.len();
         }
     }
-    // Stacked top to bottom with a clear gap between neighbors, then the
-    // stack is set at a random height. AIDEV-NOTE: bands do not cross.
-    // Crossing bands pinch the ground between them into crescent slivers
-    let gaps: Vec<f64> = (1..n).map(|_| height * rng.range(MIN_GAP, 0.25)).collect();
-    let stack = widths.iter().sum::<f64>() * height + gaps.iter().sum::<f64>();
-    let mut top = (height - stack) * rng.unit();
-    let mut bands = vec![];
-    for (i, &w) in widths.iter().enumerate() {
-        bands.push(Band {
-            base: top + w * height / 2.0,
-            amplitude: amplitude * rng.range(1.0 - AMPLITUDE_PLAY, 1.0 + AMPLITUDE_PLAY),
-            width: w * height,
-            color: palette.background,
+    let shares = shares(&polygons, width, height);
+    let ground = shares[0];
+    let lead: f64 = shares[dominant].iter().sum();
+    let mut score = -((ground - 0.5).abs() * 2.0);
+    if lead < 0.12 {
+        score -= 1.0;
+    }
+    (polygons, score)
+}
+
+fn bands(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> (Master, Vec<Band>) {
+    let a1 = height * rng.range(0.10, 0.22);
+    let master = Master {
+        a1,
+        k1: TAU / (width * rng.range(1.2, 2.5)),
+        p1: rng.range(0.0, TAU),
+        a2: a1 * rng.range(0.2, 0.45),
+        k2: TAU / (width * rng.range(0.8, 1.1)),
+        p2: rng.range(0.0, TAU),
+        drift: rng.range(-0.35, 0.35),
+    };
+    // Mostly two to four bands; five is rare
+    let n = match rng.below(20) {
+        0..=5 => 2,
+        6..=13 => 3,
+        14..=18 => 4,
+        _ => 5,
+    };
+    let lead = height * rng.range(0.14, 0.24);
+    let mut roles: Vec<(Role, f64)> = vec![(Role::Dominant, lead)];
+    for _ in 1..n {
+        roles.push((Role::Secondary, lead * rng.range(0.55, 0.8)));
+    }
+    if n >= 3 && rng.coin(0.6) {
+        roles[n - 1] = (
+            Role::Accent,
+            (lead * rng.range(0.35, 0.55)).max(MIN_WIDTH * height),
+        );
+    }
+    // The dominant band is not always on top: shuffle the stack
+    for i in (1..n).rev() {
+        roles.swap(i, rng.below(i + 1));
+    }
+    let mut bands: Vec<Band> = roles
+        .into_iter()
+        .map(|(role, w)| Band {
+            role,
+            scale: rng.range(0.9, 1.1),
+            va: height * rng.range(0.0, 0.025),
+            vk: TAU / (width * rng.range(0.7, 1.4)),
+            vp: rng.range(0.0, TAU),
+            offset: 0.0,
+            width: w,
+            color: match role {
+                Role::Dominant => palette.primary,
+                Role::Secondary => palette.secondary,
+                Role::Accent => palette.accent,
+            },
+        })
+        .collect();
+    // Each band is set below the one before it by the least separation
+    // measured along the screen, so two bands either keep a clear gap or
+    // clearly overlap and never pinch a crescent of ground between them.
+    // An overlap is never followed by another, so a band cannot reach
+    // through its neighbor to the one beyond
+    let xs: Vec<f64> = (0..PROBES)
+        .map(|i| -0.02 * height + (width + 0.04 * height) * i as f64 / (PROBES - 1) as f64)
+        .collect();
+    let mut overlapped = false;
+    for i in 1..n {
+        let (lo, hi) = xs.iter().fold((f64::MAX, f64::MIN), |(lo, hi), &x| {
+            let d = bands[i].shape(&master, x, width) - bands[i - 1].shape(&master, x, width);
+            (lo.min(d), hi.max(d))
         });
-        top += w * height + gaps.get(i).copied().unwrap_or(0.0);
+        let touch = bands[i - 1].offset + (bands[i - 1].width + bands[i].width) / 2.0;
+        let narrow = bands[i - 1].width.min(bands[i].width);
+        overlapped = !overlapped && rng.coin(0.3);
+        bands[i].offset = if overlapped {
+            touch - narrow * rng.range(OVERLAP.0, OVERLAP.1) - hi
+        } else {
+            touch + height * rng.range(MIN_GAP, 0.3) - lo
+        };
     }
-    // Wide bands go under narrow ones, so none is hidden
+    // The whole stack sits at a random height; it may run off the top or
+    // bottom, which is how a band leaves the screen
+    let (top, bottom) = bands.iter().fold((f64::MAX, f64::MIN), |(t, b), band| {
+        xs.iter().fold((t, b), |(t, b), &x| {
+            let c = band.center(&master, x, width);
+            (t.min(c - band.width / 2.0), b.max(c + band.width / 2.0))
+        })
+    });
+    let slack = 0.15 * height;
+    let (lo, hi) = (-slack - top, height + slack - (bottom - top) - top);
+    let shift = lo.min(hi) + (lo.max(hi) - lo.min(hi)) * rng.unit();
+    for band in &mut bands {
+        band.offset += shift;
+    }
+    // Wide bands go under narrow ones, so an overlap shows the narrow one
     bands.sort_by(|a, b| b.width.total_cmp(&a.width));
-    let colors = [
-        palette.primary,
-        palette.secondary,
-        palette.primary.mix(palette.secondary, 0.5),
-    ];
-    for (i, band) in bands.iter_mut().enumerate() {
-        band.color = colors[i % colors.len()];
-    }
-    // Every other scene ends with one narrow accent band on top
-    if rng.coin(0.5) {
-        let last = bands.last_mut().expect("at least two bands");
-        last.width = last.width.min(ACCENT_WIDTH * height);
-        last.color = palette.accent;
-    }
-    (wave, bands)
+    (master, bands)
 }
 
 /// One band as quads between its upper and lower edge, left to right
-fn ribbon(wave: &Wave, band: &Band, width: f64, height: f64) -> Vec<Polygon> {
+fn ribbon(master: &Master, band: &Band, width: f64, height: f64) -> Vec<Polygon> {
     let m = 0.02 * height;
-    let k = TAU / wave.wavelength;
-    let center = |x: f64| {
-        band.base + wave.drift * (x - width / 2.0) + band.amplitude * (k * x + wave.phase).sin()
-    };
-    let slope = |x: f64| wave.drift + band.amplitude * k * (k * x + wave.phase).cos();
     // Short enough that the polyline bends no more than about 2.3° at any
     // joint, which is where a curve stops looking cut from straight pieces
     let span = width + 2.0 * m;
-    let curvature = band.amplitude * k * k;
-    let n = ((curvature * span / 0.04).ceil() as usize).clamp(16, MAX_SEGMENTS);
+    let n = ((band.curvature(master) * span / 0.04).ceil() as usize).clamp(16, MAX_SEGMENTS);
     let edge = |x: f64| -> (Point, Point) {
-        let y = center(x);
+        let y = band.center(master, x, width);
         // A vertical cut through a sloping band is longer than its width;
         // the cap keeps a steep stretch from ballooning
-        let half = band.width * (1.0 + slope(x).powi(2)).sqrt().min(1.8) / 2.0;
+        let half = band.width * (1.0 + band.slope(master, x).powi(2)).sqrt().min(1.8) / 2.0;
         ([x, y - half], [x, y + half])
     };
     (0..n)
@@ -159,38 +268,53 @@ mod tests {
     }
 
     #[test]
-    fn a_scene_is_two_to_five_bands_that_leave_room() {
-        let h = 200.0;
+    fn a_scene_is_a_few_bands_of_clearly_different_widths() {
+        let (w, h) = (320.0, 200.0);
         for seed in 0..200 {
             let palette = palette(seed);
-            let (_, bands) = bands(&palette, &mut Rng::new(seed), 320.0, h);
+            let (_, bands) = bands(&palette, &mut Rng::new(seed), w, h);
             assert!((2..=5).contains(&bands.len()), "seed {seed}");
-            let total: f64 = bands.iter().map(|b| b.width).sum();
-            assert!(total <= MAX_TOTAL_WIDTH * h + 1e-9, "seed {seed}: {total}");
+            assert_eq!(bands.iter().filter(|b| b.role == Role::Dominant).count(), 1);
+            let widest = bands[0].width;
+            let narrowest = bands.last().unwrap().width;
+            assert!(widest / narrowest >= 1.25, "seed {seed}");
             for b in &bands {
-                assert!(b.width >= MIN_WIDTH * h - 1e-9 && b.width <= MAX_WIDTH * h + 1e-9);
-                if b.color == palette.accent {
-                    assert!(b.width <= ACCENT_WIDTH * h + 1e-9, "seed {seed}");
-                }
-            }
-            for (i, a) in bands.iter().enumerate() {
-                for b in &bands[i + 1..] {
-                    let apart = (a.base - b.base).abs() - (a.width + b.width) / 2.0;
-                    let play = 2.0 * AMPLITUDE_PLAY * (a.amplitude.max(b.amplitude));
-                    assert!(
-                        apart - play >= 0.0,
-                        "seed {seed}: bands {apart} apart, {play} play"
-                    );
+                assert!(b.width >= MIN_WIDTH * h - 1e-9, "seed {seed}");
+                assert!(b.width <= widest, "seed {seed}");
+                if b.role == Role::Accent {
+                    assert_eq!(b.width, narrowest);
                 }
             }
         }
     }
 
     #[test]
-    fn the_quads_stay_few_and_never_thin_out() {
-        let h = 200.0;
+    fn bands_either_keep_a_clear_gap_or_clearly_overlap() {
+        let (w, h) = (320.0, 200.0);
+        for seed in 0..200 {
+            let (master, bands) = bands(&palette(seed), &mut Rng::new(seed), w, h);
+            for (i, a) in bands.iter().enumerate() {
+                for b in &bands[i + 1..] {
+                    let narrow = a.width.min(b.width);
+                    let (mut gap, mut over) = (true, true);
+                    for k in 0..=400 {
+                        let x = -0.02 * h + (w + 0.04 * h) * k as f64 / 400.0;
+                        let d = (a.center(&master, x, w) - b.center(&master, x, w)).abs()
+                            - (a.width + b.width) / 2.0;
+                        gap &= d >= MIN_GAP * h - 1e-6;
+                        over &= d <= -OVERLAP.0 * narrow + 1e-6;
+                    }
+                    assert!(gap || over, "seed {seed}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_quads_stay_bounded_and_never_thin_out() {
+        let (w, h) = (320.0, 200.0);
         for seed in 0..100 {
-            let polygons = flow(&palette(seed), &mut Rng::new(seed), 320.0, h);
+            let polygons = flow(&palette(seed), &mut Rng::new(seed), w, h);
             assert!(polygons.len() <= 1 + 5 * MAX_SEGMENTS, "seed {seed}");
             for p in &polygons[1..] {
                 let [u0, u1, l1, l0] = p.points[..] else {
