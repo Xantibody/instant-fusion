@@ -8,7 +8,7 @@ use crate::palette::Palette;
 use crate::raster::Polygon;
 use crate::rng::Rng;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Kind {
     /// A paneled facade in one hue, with seams and sunk panels
     Facet,
@@ -20,6 +20,14 @@ pub enum Kind {
 
 impl Kind {
     pub const ALL: [Kind; 3] = [Kind::Facet, Kind::Terrain, Kind::Lowpoly];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::Facet => "facet",
+            Kind::Terrain => "terrain",
+            Kind::Lowpoly => "lowpoly",
+        }
+    }
 }
 
 /// Polygons covering the `width` × `height` image, in paint order
