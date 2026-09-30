@@ -2,6 +2,7 @@
 //! convex polygons in paint order. Nothing here touches pixels.
 
 mod facet;
+mod flow;
 
 use crate::palette::{Harmony, Palette};
 use crate::raster::Polygon;
@@ -9,18 +10,27 @@ use crate::rng::Rng;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Kind {
-    /// A paneled facade in one hue, with seams and sunk panels
+    /// A few wide, smooth bands sweeping across the screen
+    Flow,
+    /// A few large planes told apart by lightness alone
     Facet,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 1] = [Kind::Facet];
+    pub const ALL: [Kind; 2] = [Kind::Flow, Kind::Facet];
 
     /// The color harmony a seed picks for this kind. Facet lives on
     /// lightness and stays mostly in one hue; orbit is the one place a
     /// dull complementary accent is wanted
     pub fn harmony(self, rng: &mut Rng) -> Harmony {
         match self {
+            Kind::Flow => {
+                if rng.coin(0.5) {
+                    Harmony::Monochromatic
+                } else {
+                    Harmony::Analogous
+                }
+            }
             Kind::Facet => {
                 if rng.coin(0.75) {
                     Harmony::Monochromatic
@@ -33,6 +43,7 @@ impl Kind {
 
     pub fn name(self) -> &'static str {
         match self {
+            Kind::Flow => "flow",
             Kind::Facet => "facet",
         }
     }
@@ -47,6 +58,7 @@ pub fn compose(
     height: f64,
 ) -> Vec<Polygon> {
     match kind {
+        Kind::Flow => flow::flow(palette, rng, width, height),
         Kind::Facet => facet::facet(palette, rng, width, height),
     }
 }
