@@ -1,50 +1,49 @@
-//! Facet: a fragment of one folded solid. A few ridges run out from an
-//! apex that lies off screen, so the planes between them converge on a
-//! peak or valley the viewer never sees; one or two creases cross them.
-//! Every fold is where two planes meet and lean apart or toward each
-//! other, and one light direction turns the leans into lightness, so the
-//! faces read as connected surfaces rather than tiles. Five to eight
-//! large convex faces cover the screen; nothing smaller is drawn.
+//! Facet: a fragment of one folded solid. One ridge runs across the
+//! screen with a plane on either side; one or two creases cross it, and
+//! a plane still too large takes a crease of its own. Every fold turns
+//! the plane normals on its two sides away from each other, a ridge, or
+//! toward each other, a valley, and one light gives each face its
+//! lightness from its normal alone, so neighbors differ because they
+//! face the light differently and for no other reason. Five to eight
+//! convex faces cover the screen; nothing smaller is drawn.
 
-use std::f64::consts::{PI, TAU};
+use std::f64::consts::TAU;
 
 use super::{best, shares};
 use crate::color::LabExt;
 use crate::palette::Palette;
 use crate::raster::{Point, Polygon};
 use crate::rng::Rng;
-use palette::Mix;
 
-/// A convex face and the direction its plane leans toward, whose length
-/// says how far; a flat face has no lean
+/// A convex face and the normal of its plane, unit length, z toward the
+/// viewer
 #[derive(Clone, Debug)]
 struct Face {
     points: Vec<Point>,
-    lean: Point,
+    normal: [f64; 3],
     /// Set once no cut through it gives two well-shaped halves
     closed: bool,
 }
 
-/// Where two planes meet: the line through `p` along `d`. Across a ridge
-/// the sides lean away from it, across a valley toward it, by `strength`
+/// Where two planes meet: the line through `p` along `d`, with the
+/// planes turned `angle` apart about it, away from each other across a
+/// ridge and toward each other across a valley
 #[derive(Clone, Copy, Debug)]
 struct Fold {
     p: Point,
     d: Point,
     /// 1 for a ridge, -1 for a valley
     sign: f64,
-    strength: f64,
+    angle: f64,
 }
 
 /// What the faces were cut from; the tests read what the scene only
 /// draws
 #[cfg_attr(not(test), allow(dead_code))]
 struct Structure {
-    /// Where the ridges meet, off screen
-    apex: Point,
-    light: Point,
-    /// The ridges from the apex that shaped the first faces
-    ridges: Vec<Fold>,
+    light: [f64; 3],
+    /// Every fold in the order it was cut; the first is the ridge
+    folds: Vec<Fold>,
 }
 
 /// Area over squared perimeter: 0.0625 for a square, 0.048 for an
@@ -55,22 +54,23 @@ const MIN_ROUNDNESS: f64 = 0.03;
 const MIN_HALF: f64 = 0.25;
 /// No face may end up under this share of the image
 const MIN_FACE: f64 = 0.025;
-/// The least lightness step wanted across an edge
-const MIN_STEP: f32 = 0.05;
 /// Compositions drawn per seed; the best by score is kept
 const CANDIDATES: usize = 4;
 /// The largest face should take this share of the image
 const LEAD: (f64, f64) = (0.25, 0.45);
 /// How many faces a scene ends with
 const FACES: (usize, usize) = (5, 8);
-/// How far beyond an edge the apex sits, as a share of the shorter side
-const REACH: (f64, f64) = (0.05, 0.9);
-/// Two ridges keep at least this share of the view between them
-const MIN_RIDGE_GAP: f64 = 0.18;
-/// How far the planes lean across a fold
-const STRENGTH: (f64, f64) = (0.3, 0.6);
-/// How far every plane also tilts away from the apex, or toward it
-const SLOPE: (f64, f64) = (0.15, 0.35);
+/// How far the planes turn apart across a fold, in radians: 20° to 45°
+const FOLD: (f64, f64) = (0.35, 0.8);
+/// How far the first plane may lean before any fold, in radians
+const TILT: f64 = 0.25;
+/// The light's height above the screen plane, in radians: 20° to 40°,
+/// low enough that a turn of the normal changes the shade clearly
+const ELEVATION: (f64, f64) = (0.35, 0.7);
+/// A crease crosses the ridge at no shallower an angle than this
+const MIN_CROSS: f64 = 0.5;
+/// Two neighbors whose shades differ by less than this read as one
+const FLAT: f32 = 0.03;
 
 fn sub(a: Point, b: Point) -> Point {
     [a[0] - b[0], a[1] - b[1]]
@@ -114,6 +114,24 @@ fn centroid(points: &[Point]) -> Point {
         .iter()
         .fold([0.0, 0.0], |s, p| [s[0] + p[0], s[1] + p[1]]);
     [s[0] / n, s[1] / n]
+}
+
+/// `v` turned by `angle` about the axis lying in the screen along `d`
+fn turn(v: [f64; 3], d: Point, angle: f64) -> [f64; 3] {
+    let (s, c) = angle.sin_cos();
+    let a = [d[0], d[1], 0.0];
+    let along = a[0] * v[0] + a[1] * v[1];
+    let axv = [a[1] * v[2], -a[0] * v[2], a[0] * v[1] - a[1] * v[0]];
+    [
+        v[0] * c + axv[0] * s + a[0] * along * (1.0 - c),
+        v[1] * c + axv[1] * s + a[1] * along * (1.0 - c),
+        v[2] * c + axv[2] * s,
+    ]
+}
+
+/// How much of the light a plane with this normal catches, 0 to 1
+fn shade(normal: [f64; 3], light: [f64; 3]) -> f64 {
+    (normal[0] * light[0] + normal[1] * light[1] + normal[2] * light[2]).clamp(0.0, 1.0)
 }
 
 /// Both sides of the line through `p` along `d`, left first. A side the
@@ -165,24 +183,11 @@ fn adjacent(a: &[Point], b: &[Point]) -> bool {
 }
 
 /// Whether an edge of the face runs along the fold
+#[cfg(test)]
 fn borders(points: &[Point], fold: &Fold) -> bool {
     let n = points.len();
     let off = |q: Point| cross(fold.d, sub(q, fold.p)).abs();
     (0..n).any(|i| off(points[i]) < 1e-6 && off(points[(i + 1) % n]) < 1e-6)
-}
-
-/// Where a face leans, summed over the folds it borders: away from each
-/// ridge and toward each valley
-fn lean(points: &[Point], folds: &[Fold]) -> Point {
-    let g = centroid(points);
-    folds
-        .iter()
-        .filter(|fold| borders(points, fold))
-        .fold([0.0, 0.0], |lean, fold| {
-            let side = cross(fold.d, sub(g, fold.p)).signum();
-            let k = side * fold.sign * fold.strength;
-            [lean[0] - fold.d[1] * k, lean[1] + fold.d[0] * k]
-        })
 }
 
 /// The image with a small margin, so no edge is ever left uncovered
@@ -203,10 +208,10 @@ pub fn facet(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> Vec<P
 }
 
 /// One composition and how well it reads: one face should clearly lead
-/// without swallowing the image, none should be tiny, the light alone
-/// should tell neighbors apart, and no corner where four or more faces
-/// meet should sit in the middle, which is where a hub reads as the
-/// generator
+/// without swallowing the image, none should be tiny, the light should
+/// tell every pair of neighbors apart, and no corner where four or more
+/// faces meet should sit in the middle, which is where a hub reads as
+/// the generator
 fn candidate(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> (Vec<Polygon>, f64) {
     let (faces, structure) = faces(rng, width, height);
     let (lo, hi) = if palette.bright {
@@ -214,41 +219,31 @@ fn candidate(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> (Vec<
     } else {
         (0.15, 0.50)
     };
-    let mut lightness: Vec<f32> = faces
+    let lightness: Vec<f32> = faces
         .iter()
-        .map(|f| {
-            let k = ((dot(f.lean, structure.light) as f32 + 1.0) / 2.0).clamp(0.0, 1.0);
-            lo + (hi - lo) * k
-        })
+        .map(|f| lo + (hi - lo) * shade(f.normal, structure.light) as f32)
         .collect();
     let mut flat = 0;
     for (i, a) in faces.iter().enumerate() {
         for (j, b) in faces.iter().enumerate().skip(i + 1) {
-            if adjacent(&a.points, &b.points) && (lightness[i] - lightness[j]).abs() < MIN_STEP {
+            if adjacent(&a.points, &b.points) && (lightness[i] - lightness[j]).abs() < FLAT {
                 flat += 1;
             }
         }
     }
-    separate(&faces, &mut lightness, lo, hi);
     let mut polygons = vec![Polygon {
         points: frame(width, height),
         color: palette.background,
     }];
     for (f, &l) in faces.iter().zip(&lightness) {
-        // Lit faces drift a little toward the secondary hue; under a
-        // monochromatic harmony that changes nothing
-        let k = (l - lo) / (hi - lo);
         polygons.push(Polygon {
             points: f.points.clone(),
-            color: palette
-                .primary
-                .mix(palette.secondary, k * 0.3)
-                .with_lightness(l),
+            color: palette.primary.with_lightness(l),
         });
     }
     let shares = &shares(&polygons, width, height)[1..];
     let lead = shares.iter().cloned().fold(0.0, f64::max);
-    let mut score = -0.3 * flat as f64;
+    let mut score = -0.5 * flat as f64;
     if lead < LEAD.0 {
         score -= (LEAD.0 - lead) * 5.0;
     } else if lead > LEAD.1 {
@@ -277,136 +272,44 @@ fn candidate(palette: &Palette, rng: &mut Rng, width: f64, height: f64) -> (Vec<
     (polygons, score)
 }
 
-/// A face whose shade sits too close to a neighbor's is moved to the
-/// nearest value clear of all its neighbors, smaller faces first, so
-/// every edge stays visible
-fn separate(faces: &[Face], lightness: &mut [f32], lo: f32, hi: f32) {
-    let mut order: Vec<usize> = (0..faces.len()).collect();
-    order.sort_by(|&i, &j| area(&faces[i].points).total_cmp(&area(&faces[j].points)));
-    for _ in 0..3 {
-        for &i in &order {
-            let others: Vec<f32> = (0..faces.len())
-                .filter(|&j| j != i && adjacent(&faces[i].points, &faces[j].points))
-                .map(|j| lightness[j])
-                .collect();
-            let clearance = |v: f32| {
-                others
-                    .iter()
-                    .map(|o| (v - o).abs())
-                    .fold(f32::MAX, f32::min)
-            };
-            if clearance(lightness[i]) >= MIN_STEP {
-                continue;
-            }
-            let steps = ((hi - lo) / 0.005) as usize;
-            let values = (0..=steps).map(|k| lo + (hi - lo) * k as f32 / steps as f32);
-            let clear: Vec<f32> = values
-                .clone()
-                .filter(|&v| clearance(v) >= MIN_STEP)
-                .collect();
-            lightness[i] = if clear.is_empty() {
-                values
-                    .max_by(|&a, &b| clearance(a).total_cmp(&clearance(b)))
-                    .expect("a value")
-            } else {
-                clear
-                    .into_iter()
-                    .min_by(|&a, &b| {
-                        (a - lightness[i])
-                            .abs()
-                            .total_cmp(&(b - lightness[i]).abs())
-                    })
-                    .expect("a value")
-            };
-        }
-    }
-}
-
-/// A point beyond one edge of the screen, anywhere along it and a little
-/// past its ends
-fn apex(rng: &mut Rng, width: f64, height: f64) -> Point {
-    let reach = width.min(height) * rng.range(REACH.0, REACH.1);
-    let along = rng.range(-0.3, 1.3);
-    match rng.below(4) {
-        0 => [width * along, -reach],
-        1 => [width + reach, height * along],
-        2 => [width * along, height + reach],
-        _ => [-reach, height * along],
-    }
-}
-
-/// The direction from the apex to the middle of the screen, and the
-/// angles either side of it within which the screen is seen; less than a
-/// half turn, since the apex is outside
-fn view(apex: Point, width: f64, height: f64) -> (f64, f64, f64) {
-    let base = (height / 2.0 - apex[1]).atan2(width / 2.0 - apex[0]);
-    frame(width, height)
-        .into_iter()
-        .fold((base, 0.0, 0.0), |(base, lo, hi), c| {
-            let a = (c[1] - apex[1]).atan2(c[0] - apex[0]) - base;
-            let a = (a + PI).rem_euclid(TAU) - PI;
-            (base, lo.min(a), hi.max(a))
-        })
-}
-
 /// The faces and the structure they were cut from
 fn faces(rng: &mut Rng, width: f64, height: f64) -> (Vec<Face>, Structure) {
-    let apex = apex(rng, width, height);
-    let (base, lo, hi) = view(apex, width, height);
-    // Lit from across the ridges, give or take, so the leans they cause
-    // show; along them every side would look alike
-    let light =
-        dir(base + TAU / 4.0 * if rng.coin(0.5) { 1.0 } else { -1.0 } + rng.range(-0.6, 0.6));
     let total = area(&frame(width, height));
+    let coin = |rng: &mut Rng| if rng.coin(0.5) { 1.0 } else { -1.0 };
+    // The ridge: across the middle third at any angle. The first plane
+    // leans a little some way, so the ridge is not seen exactly edge on
+    let ridge = Fold {
+        p: [width * rng.range(0.3, 0.7), height * rng.range(0.3, 0.7)],
+        d: dir(rng.range(0.0, TAU)),
+        sign: coin(rng),
+        angle: rng.range(FOLD.0, FOLD.1),
+    };
     let mut faces = vec![Face {
         points: frame(width, height),
-        lean: [0.0, 0.0],
+        normal: turn(
+            [0.0, 0.0, 1.0],
+            dir(rng.range(0.0, TAU)),
+            rng.range(0.0, TILT),
+        ),
         closed: false,
     }];
-    let mut folds: Vec<Fold> = vec![];
-    let strength = |rng: &mut Rng| rng.range(STRENGTH.0, STRENGTH.1);
-    // Mostly two ridges from the apex, spread across the view; a ridge
-    // that would cut a sliver off is redrawn
-    let wanted = match rng.below(20) {
-        0..=5 => 1,
-        6..=14 => 2,
-        _ => 3,
-    };
-    let mut ridges: Vec<(f64, usize)> = vec![];
-    for _ in 0..wanted {
-        for _ in 0..8 {
-            let t = rng.range(0.15, 0.85);
-            if ridges.iter().any(|&(u, _)| (t - u).abs() < MIN_RIDGE_GAP) {
-                continue;
-            }
-            let fold = Fold {
-                p: apex,
-                d: dir(base + lo + (hi - lo) * t),
-                sign: 1.0,
-                strength: strength(rng),
-            };
-            if fold_all(&mut faces, &fold, total, |_| true) {
-                ridges.push((t, folds.len()));
-                folds.push(fold);
-                break;
-            }
-        }
+    let mut folds = vec![];
+    if fold_all(&mut faces, &ridge, total, |_| true) {
+        folds.push(ridge);
     }
-    // Neighboring ridges mostly fold the other way, so the planes zigzag
-    // like a peak beside a valley; sometimes the same way, which steps
-    // them like a hipped roof
-    ridges.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut sign = if rng.coin(0.5) { 1.0 } else { -1.0 };
-    for &(_, i) in &ridges {
-        folds[i].sign = sign;
-        if rng.coin(0.65) {
-            sign = -sign;
-        }
-    }
-    // One crease across the ridges, sometimes none or two, through a
-    // point off the middle; where it would leave a sliver it ends at the
-    // ridge before. The largest face is spared unless it has too much of
-    // the image, so one plane keeps leading
+    // Lit from low over the screen, from any side; higher, every plane
+    // would catch about the same light
+    let azimuth = rng.range(0.0, TAU);
+    let elevation = rng.range(ELEVATION.0, ELEVATION.1);
+    let light = [
+        azimuth.cos() * elevation.cos(),
+        azimuth.sin() * elevation.cos(),
+        elevation.sin(),
+    ];
+    // One crease across the ridge, sometimes two or none, through a point
+    // off the middle; where it would leave a sliver it ends at the ridge.
+    // The largest face is spared unless it has too much of the image, so
+    // one plane keeps leading
     let edge = |rng: &mut Rng, size: f64| {
         size * if rng.coin(0.5) {
             rng.range(0.1, 0.3)
@@ -414,17 +317,21 @@ fn faces(rng: &mut Rng, width: f64, height: f64) -> (Vec<Face>, Structure) {
             rng.range(0.7, 0.9)
         }
     };
-    let creases = match rng.below(4) {
-        0 => 0,
-        1..=2 => 1,
+    let creases = match rng.below(10) {
+        0..=1 => 0,
+        2..=6 => 1,
         _ => 2,
+    };
+    let across = |rng: &mut Rng| {
+        let base = ridge.d[1].atan2(ridge.d[0]);
+        dir(base + coin(rng) * rng.range(MIN_CROSS, TAU / 2.0 - MIN_CROSS))
     };
     for _ in 0..creases {
         let fold = Fold {
             p: [edge(rng, width), edge(rng, height)],
-            d: dir(base + TAU / 4.0 + rng.range(-0.5, 0.5)),
-            sign: if rng.coin(0.5) { 1.0 } else { -1.0 },
-            strength: strength(rng),
+            d: across(rng),
+            sign: coin(rng),
+            angle: rng.range(FOLD.0, FOLD.1),
         };
         let lead = faces.iter().map(|f| area(&f.points)).fold(0.0, f64::max);
         let spared = |f: &Face| area(&f.points) == lead && lead <= LEAD.1 * total;
@@ -433,9 +340,8 @@ fn faces(rng: &mut Rng, width: f64, height: f64) -> (Vec<Face>, Structure) {
         }
     }
     // Too few faces, or one with too much of the image: the largest open
-    // face takes one more ridge from the apex while there are under three,
-    // since more read as a fan of stripes; otherwise, or failing that, a
-    // crease across it near its middle; or it is closed
+    // face takes a crease of its own near its middle, across the ridge
+    // or any way, or is closed
     loop {
         let open = (0..faces.len()).filter(|&i| !faces[i].closed);
         let Some(i) =
@@ -449,41 +355,30 @@ fn faces(rng: &mut Rng, width: f64, height: f64) -> (Vec<Face>, Structure) {
         }
         let g = centroid(&faces[i].points);
         let size = area(&faces[i].points).sqrt();
-        let sign = if rng.coin(0.5) { 1.0 } else { -1.0 };
-        let strength = strength(rng);
-        let radial = Fold {
-            p: apex,
-            d: dir((g[1] - apex[1]).atan2(g[0] - apex[0]) + rng.range(-0.08, 0.08)),
-            sign,
-            strength,
+        let d = if rng.coin(0.6) {
+            across(rng)
+        } else {
+            dir(rng.range(0.0, TAU))
         };
-        let radials = folds.iter().filter(|f| f.p == apex).count();
-        let mut fold = radial;
-        let mut halves = None;
-        if radials < 3 && rng.coin(0.6) {
-            halves = cut(&faces[i], &fold, total);
-        }
-        if halves.is_none() {
-            let d = dir(base + TAU / 4.0 + rng.range(-0.5, 0.5));
-            for _ in 0..12 {
-                let p = [
+        let (sign, angle) = (coin(rng), rng.range(FOLD.0, FOLD.1));
+        let mut cut_with = None;
+        for _ in 0..12 {
+            let fold = Fold {
+                p: [
                     g[0] + size * rng.range(-0.2, 0.2),
                     g[1] + size * rng.range(-0.2, 0.2),
-                ];
-                fold = Fold {
-                    p,
-                    d,
-                    sign,
-                    strength,
-                };
-                halves = cut(&faces[i], &fold, total);
-                if halves.is_some() {
-                    break;
-                }
+                ],
+                d,
+                sign,
+                angle,
+            };
+            if let Some(halves) = cut(&faces[i], &fold, total) {
+                cut_with = Some((fold, halves));
+                break;
             }
         }
-        match halves {
-            Some((a, b)) => {
+        match cut_with {
+            Some((fold, (a, b))) => {
                 faces[i] = a;
                 faces.push(b);
                 folds.push(fold);
@@ -491,21 +386,7 @@ fn faces(rng: &mut Rng, width: f64, height: f64) -> (Vec<Face>, Structure) {
             None => faces[i].closed = true,
         }
     }
-    // The whole solid rises to a peak at the apex, or sinks to a valley,
-    // so every plane also tilts away from it or toward it
-    let slope = rng.range(SLOPE.0, SLOPE.1) * if rng.coin(0.6) { 1.0 } else { -1.0 };
-    for f in &mut faces {
-        let v = sub(centroid(&f.points), apex);
-        let len = v[0].hypot(v[1]);
-        let l = lean(&f.points, &folds);
-        f.lean = [l[0] + v[0] / len * slope, l[1] + v[1] / len * slope];
-    }
-    let structure = Structure {
-        apex,
-        light,
-        ridges: ridges.iter().map(|&(_, i)| folds[i]).collect(),
-    };
-    (faces, structure)
+    (faces, Structure { light, folds })
 }
 
 /// The fold cut across every face it crosses that `may` be cut, until
@@ -529,20 +410,22 @@ fn fold_all(faces: &mut Vec<Face>, fold: &Fold, total: f64, may: impl Fn(&Face) 
     any
 }
 
-/// One face cut along the fold into two well-shaped halves, left first;
-/// none when a half would be a sliver. Leans are settled once every fold
-/// is known
+/// One face cut along the fold into two well-shaped halves, left first,
+/// each turned half the fold's angle about it: away from the fold for a
+/// ridge, toward it for a valley. None when a half would be a sliver
 fn cut(f: &Face, fold: &Fold, total: f64) -> Option<(Face, Face)> {
     let (l, r) = split(&f.points, fold.p, fold.d);
     if !(well_formed(&l, &f.points, total) && well_formed(&r, &f.points, total)) {
         return None;
     }
-    let face = |points: Vec<Point>| Face {
+    // A positive turn about the fold's direction tips the normal toward
+    // the right side; the left face of a ridge tips the other way
+    let face = |points: Vec<Point>, side: f64| Face {
         points,
-        lean: [0.0, 0.0],
+        normal: turn(f.normal, fold.d, -side * fold.sign * fold.angle / 2.0),
         closed: false,
     };
-    Some((face(l), face(r)))
+    Some((face(l, 1.0), face(r, -1.0)))
 }
 
 #[cfg(test)]
@@ -578,65 +461,74 @@ mod tests {
     }
 
     #[test]
-    fn the_ridges_run_from_one_apex_beyond_the_screen() {
+    fn the_ridge_crosses_the_screen_and_no_folds_share_a_point() {
         let (w, h) = (320.0, 200.0);
         for seed in 0..200 {
             let (faces, s) = faces(&mut Rng::new(seed), w, h);
-            let inside = (0.0..=w).contains(&s.apex[0]) && (0.0..=h).contains(&s.apex[1]);
-            assert!(!inside, "seed {seed}: apex {:?}", s.apex);
-            assert!((1..=3).contains(&s.ridges.len()), "seed {seed}");
-            for r in &s.ridges {
-                assert_eq!(r.p, s.apex);
-                let sides = faces.iter().filter(|f| borders(&f.points, r)).count();
-                assert!(
-                    sides >= 2,
-                    "seed {seed}: a ridge with {sides} faces along it"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn the_sides_of_a_ridge_lean_apart_and_of_a_valley_toward_it() {
-        let square = vec![[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]];
-        let up = [0.0, 1.0];
-        for sign in [1.0, -1.0] {
-            let fold = Fold {
-                p: [1.0, 1.0],
-                d: up,
-                sign,
-                strength: 0.5,
-            };
-            let (l, r) = split(&square, fold.p, up);
-            // The left half is the x < 1 side; leaning away from the fold
-            // is leaning toward negative x
-            assert_eq!(lean(&l, &[fold])[0], -0.5 * sign);
-            assert_eq!(lean(&r, &[fold])[0], 0.5 * sign);
-            assert_eq!(lean(&square, &[fold]), [0.0, 0.0]);
-        }
-    }
-
-    #[test]
-    fn neighboring_faces_never_share_a_lightness() {
-        use crate::fixtures::dayfox;
-        use crate::palette::Harmony;
-        for seed in 0..100 {
-            let palette = Palette::new(&dayfox(), Harmony::Monochromatic, &mut Rng::new(seed));
-            let polygons = facet(&palette, &mut Rng::new(seed), 320.0, 200.0);
-            let faces = &polygons[1..];
-            for (i, a) in faces.iter().enumerate() {
-                for b in &faces[i + 1..] {
-                    if adjacent(&a.points, &b.points) {
-                        assert!(
-                            (a.color.l - b.color.l).abs() >= MIN_STEP - 1e-6,
-                            "seed {seed}: {} vs {}",
-                            a.color.l,
-                            b.color.l
-                        );
+            let ridge = s.folds[0];
+            let (l, r) = split(&frame(w, h), ridge.p, ridge.d);
+            assert!(l.len() >= 3 && r.len() >= 3, "seed {seed}");
+            let sides = faces.iter().filter(|f| borders(&f.points, &ridge)).count();
+            assert!(
+                sides >= 2,
+                "seed {seed}: the ridge has {sides} faces along it"
+            );
+            // Three folds through one point would be a fan
+            for (i, a) in s.folds.iter().enumerate() {
+                for (j, b) in s.folds.iter().enumerate().skip(i + 1) {
+                    for c in &s.folds[j + 1..] {
+                        let meet = |x: &Fold, y: &Fold| -> Option<Point> {
+                            let den = cross(x.d, y.d);
+                            (den.abs() > 1e-9).then(|| {
+                                let t = cross(sub(y.p, x.p), y.d) / den;
+                                [x.p[0] + x.d[0] * t, x.p[1] + x.d[1] * t]
+                            })
+                        };
+                        if let (Some(p), Some(q)) = (meet(a, b), meet(a, c)) {
+                            assert!(sub(p, q)[0].hypot(sub(p, q)[1]) > 1e-6, "seed {seed}");
+                        }
                     }
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_sides_of_a_ridge_tip_apart_and_of_a_valley_toward_it() {
+        let flat = Face {
+            points: vec![[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]],
+            normal: [0.0, 0.0, 1.0],
+            closed: false,
+        };
+        for sign in [1.0, -1.0] {
+            let fold = Fold {
+                p: [1.0, 1.0],
+                d: [0.0, 1.0],
+                sign,
+                angle: 0.6,
+            };
+            let (l, r) = cut(&flat, &fold, 4.0).expect("two halves");
+            // The left half is the x < 1 side; tipping away from the fold
+            // is tipping toward negative x
+            assert!((l.normal[0] - -sign * 0.3f64.sin()).abs() < 1e-9);
+            assert!((r.normal[0] - sign * 0.3f64.sin()).abs() < 1e-9);
+            assert!((l.normal[2] - 0.3f64.cos()).abs() < 1e-9);
+            let dot3 =
+                l.normal[0] * r.normal[0] + l.normal[1] * r.normal[1] + l.normal[2] * r.normal[2];
+            assert!(
+                (dot3.acos() - 0.6).abs() < 1e-9,
+                "the halves turn the fold's angle apart"
+            );
+        }
+    }
+
+    #[test]
+    fn a_shade_is_the_light_a_plane_catches() {
+        let light = [0.6, 0.0, 0.8];
+        assert!((shade(light, light) - 1.0).abs() < 1e-9);
+        assert_eq!(shade([-0.8, 0.0, 0.6], light), 0.0);
+        assert!(shade([0.0, 0.0, 1.0], light) < shade(light, light));
+        assert!(shade([-0.6, 0.0, 0.8], light) < shade([0.0, 0.0, 1.0], light));
     }
 
     #[test]
@@ -648,6 +540,7 @@ mod tests {
         let mut seen = vec![];
         for p in &polygons[1..] {
             assert!((p.color.hue() - palette.primary.hue()).abs() < 1e-3);
+            assert!((p.color.chroma() - palette.primary.chroma()).abs() < 1e-3);
             seen.push(p.color.l);
         }
         seen.sort_by(f32::total_cmp);

@@ -23,8 +23,8 @@ impl Kind {
     pub const ALL: [Kind; 3] = [Kind::Flow, Kind::Orbit, Kind::Facet];
 
     /// The color harmony a seed picks for this kind. Facet lives on
-    /// lightness and stays mostly in one hue; orbit is the one place a
-    /// dull complementary accent is wanted
+    /// lightness alone in one hue; orbit is the one place a dull
+    /// complementary accent is wanted
     pub fn harmony(self, rng: &mut Rng) -> Harmony {
         match self {
             Kind::Flow => {
@@ -41,13 +41,9 @@ impl Kind {
                     Harmony::MutedComplementary
                 }
             }
-            Kind::Facet => {
-                if rng.coin(0.75) {
-                    Harmony::Monochromatic
-                } else {
-                    Harmony::Analogous
-                }
-            }
+            // The lightness is the light on the planes; a second hue would
+            // only compete with it
+            Kind::Facet => Harmony::Monochromatic,
         }
     }
 
