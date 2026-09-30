@@ -1,0 +1,9 @@
+[package]
+name = "instant-fusion"
+version = "0.1.0"
+edition = "2024"
+description = "A geometric wallpaper generated from a base16 scheme"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0.104"
