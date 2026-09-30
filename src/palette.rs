@@ -6,7 +6,7 @@
 
 use std::f32::consts::PI;
 
-use crate::color::Lab;
+use crate::color::{Lab, LabExt};
 use crate::rng::Rng;
 use crate::scheme::Scheme;
 

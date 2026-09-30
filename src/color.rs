@@ -1,111 +1,81 @@
-//! OKLab colors. Mixing and shading happen here rather than in sRGB, where
-//! midpoints turn muddy and "lighter" does not look evenly lighter.
-//!
-//! The matrices are Björn Ottosson's reference values, kept digit for digit
-//! so they can be checked against the source.
-#![allow(clippy::excessive_precision)]
+//! Colors live in OKLab, palette's `Oklab`, where mixing and shading stay
+//! even; sRGB is only the input and output format. The conversions are
+//! palette's. This module adds the polar helpers the scene code speaks
+//! in, so a caller never handles `a` and `b` directly.
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Lab {
-    pub l: f32,
-    pub a: f32,
-    pub b: f32,
-}
+use palette::encoding::FromLinear;
+use palette::{FromColor, IntoColor, LinSrgb, Oklab, Oklch, ShiftHue, Srgb};
 
-fn decode(c: f32) -> f32 {
-    if c <= 0.04045 {
-        c / 12.92
-    } else {
-        ((c + 0.055) / 1.055).powf(2.4)
-    }
-}
+pub type Lab = Oklab;
 
 /// Linear light to sRGB-encoded, both in [0, 1]
 pub fn encode(c: f32) -> f32 {
-    let c = c.clamp(0.0, 1.0);
-    if c <= 0.0031308 {
-        c * 12.92
-    } else {
-        1.055 * c.powf(1.0 / 2.4) - 0.055
-    }
+    palette::encoding::Srgb::from_linear(c.clamp(0.0, 1.0))
 }
 
-impl Lab {
-    pub const fn new(l: f32, a: f32, b: f32) -> Lab {
-        Lab { l, a, b }
-    }
-
-    pub fn from_srgb(rgb: [u8; 3]) -> Lab {
-        let [r, g, b] = rgb.map(|c| decode(c as f32 / 255.0));
-        let l = (0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b).cbrt();
-        let m = (0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b).cbrt();
-        let s = (0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b).cbrt();
-        Lab::new(
-            0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
-            1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
-            0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s,
-        )
-    }
-
+pub trait LabExt: Sized {
+    fn from_srgb(rgb: [u8; 3]) -> Self;
     /// Linear-light RGB, not clamped: a color outside the sRGB gamut comes
     /// out with components below 0 or above 1
-    pub fn to_linear(self) -> [f32; 3] {
-        let l = (self.l + 0.3963377774 * self.a + 0.2158037573 * self.b).powi(3);
-        let m = (self.l - 0.1055613458 * self.a - 0.0638541728 * self.b).powi(3);
-        let s = (self.l - 0.0894841775 * self.a - 1.2914855480 * self.b).powi(3);
-        [
-            4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
-            -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
-            -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s,
-        ]
+    fn to_linear(self) -> [f32; 3];
+    fn to_srgb(self) -> [u8; 3];
+    /// Distance from grey
+    fn chroma(self) -> f32;
+    /// Hue angle in radians; 0 for a grey
+    fn hue(self) -> f32;
+    /// The same lightness and chroma, hue turned by `angle` radians
+    fn rotate_hue(self, angle: f32) -> Self;
+    /// The same hue and lightness at exactly `chroma`. A grey has no hue
+    /// to keep, so it stays grey
+    fn with_chroma(self, chroma: f32) -> Self;
+    fn with_lightness(self, l: f32) -> Self;
+}
+
+impl LabExt for Lab {
+    fn from_srgb(rgb: [u8; 3]) -> Lab {
+        let [r, g, b] = rgb;
+        Lab::from_color(Srgb::new(r, g, b).into_format::<f32>().into_linear())
     }
 
-    pub fn to_srgb(self) -> [u8; 3] {
+    fn to_linear(self) -> [f32; 3] {
+        let c: LinSrgb = self.into_color();
+        [c.red, c.green, c.blue]
+    }
+
+    fn to_srgb(self) -> [u8; 3] {
         self.to_linear().map(|c| (encode(c) * 255.0).round() as u8)
     }
 
-    pub fn mix(self, other: Lab, t: f32) -> Lab {
-        Lab::new(
-            self.l + (other.l - self.l) * t,
-            self.a + (other.a - self.a) * t,
-            self.b + (other.b - self.b) * t,
-        )
+    fn chroma(self) -> f32 {
+        Oklch::from_color(self).chroma
     }
 
-    /// Distance from grey: `sqrt(a² + b²)`
-    pub fn chroma(self) -> f32 {
-        self.a.hypot(self.b)
+    fn hue(self) -> f32 {
+        Oklch::from_color(self).hue.into_radians()
     }
 
-    /// Hue angle in radians, `atan2(b, a)`; 0 for a grey
-    pub fn hue(self) -> f32 {
-        self.b.atan2(self.a)
+    fn rotate_hue(self, angle: f32) -> Lab {
+        Lab::from_color(Oklch::from_color(self).shift_hue(angle.to_degrees()))
     }
 
-    /// The same lightness and chroma, hue turned by `angle` radians
-    pub fn rotate_hue(self, angle: f32) -> Lab {
-        let (s, c) = angle.sin_cos();
-        Lab::new(self.l, self.a * c - self.b * s, self.a * s + self.b * c)
-    }
-
-    /// The same hue and lightness at exactly `chroma`. A grey has no hue
-    /// to keep, so it stays grey
-    pub fn with_chroma(self, chroma: f32) -> Lab {
-        let now = self.chroma();
-        if now == 0.0 {
+    fn with_chroma(self, chroma: f32) -> Lab {
+        if self.chroma() == 0.0 {
             return self;
         }
-        Lab::new(self.l, self.a * chroma / now, self.b * chroma / now)
+        let mut c = Oklch::from_color(self);
+        c.chroma = chroma;
+        Lab::from_color(c)
     }
 
-    pub fn with_lightness(self, l: f32) -> Lab {
-        Lab::new(l, self.a, self.b)
+    fn with_lightness(self, l: f32) -> Lab {
+        Lab { l, ..self }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use palette::Mix;
 
     #[test]
     fn srgb_survives_a_round_trip_through_oklab() {

@@ -9,9 +9,11 @@
 use std::f64::consts::{PI, TAU};
 
 use super::{best, shares};
+use crate::color::LabExt;
 use crate::palette::Palette;
 use crate::raster::{Point, Polygon};
 use crate::rng::Rng;
+use palette::Mix;
 
 /// A convex face and the direction its plane leans toward, whose length
 /// says how far; a flat face has no lean

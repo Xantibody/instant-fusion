@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result, bail};
 
-use crate::color::Lab;
+use crate::color::{Lab, LabExt};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Scheme {

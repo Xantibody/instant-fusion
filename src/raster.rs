@@ -5,7 +5,7 @@
 //! linear light. Keeping ids instead of colors keeps the buffer small, and
 //! most pixels have one owner, which then costs one color conversion.
 
-use crate::color::{Lab, encode};
+use crate::color::{Lab, LabExt, encode};
 
 pub type Point = [f64; 2];
 
