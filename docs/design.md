@@ -16,17 +16,18 @@ size ───────────────────┘   (kind)
   color. Depth is only ever suggested by the lightness a polygon is given
 - rasterizer: paints the list back to front. It knows nothing about scenes
 - Adding a kind touches only the scene side; the rasterizer stays a plain
-  polygon filler
+  polygon filler. Curves are not a rasterizer concern: a scene samples a
+  curve and hands over quads, which the antialiasing joins seamlessly
 
 An earlier draft had generators return a scalar field `(x, y) → [0,1]` that a
 colorizer mapped to color. That fits noise-like patterns, but the wallpapers
-wanted here are crisp faceted surfaces: their edges are the picture, and a
-field sampled per pixel can only approximate an edge.
+wanted here are crisp shapes: their edges are the picture, and a field
+sampled per pixel can only approximate an edge.
 
 ## CLI
 
 ```
-instant-fusion --scheme <base16.yaml> --size 1920x1200 [--seed N] [--kind facet|terrain|lowpoly] -o <out.png|->
+instant-fusion --scheme <base16.yaml> --size 1920x1200 [--seed N] [--kind flow|orbit|facet] -o <out.png|->
 ```
 
 - Without `--seed`, a random seed is used. The seed and kind are printed to
@@ -38,37 +39,72 @@ instant-fusion --scheme <base16.yaml> --size 1920x1200 [--seed N] [--kind facet|
 
 ## Colors
 
-- The scheme supplies hues, not lightness. base16 does not order its colors
-  by lightness (in dayfox, base03 `534c45` is dark while base07 `f4ece6` is
-  light), so a scene that read lightness off the scheme would shade its faces
-  inconsistently. Accents (base08–0F) are leveled to one lightness and their
-  chroma is capped; shading then moves lightness only
-- The tone follows base00: a light scheme gives a pale pastel wallpaper, a
-  dark scheme a dim one
+- The scheme is an anchor, not a palette. One of its accents (base08–0F)
+  gives the hue and base00 the tone; the four semantic colors (background,
+  primary, secondary, accent) are derived from that in OKLab. A scheme
+  need not contain the colors that appear: a navy scheme may yield a muted
+  beige
+- A harmony, chosen per kind from the seed, says how the hues relate:
+  monochromatic (one hue, lightness steps only), analogous (secondary and
+  accent within 45° on either side) or muted complementary (accent across
+  the wheel, chroma capped lower still)
+- Chroma is capped at 0.07 everywhere, so a loud scheme still gives a
+  quiet wallpaper. Lightness steps outward from the background: darker
+  than a pale ground, lighter than a dim one
+- The accent is for small areas only; a scene keeps it under about 15% of
+  the image
 - Mix in OKLab (sRGB interpolation muddies the midpoints)
 
 ## Scenes
 
-All three fill the screen with triangles.
+Three looks that must read as different pictures: a curve, an arc, a plane.
+All are minimal and large-scale; nothing smaller than a band or a face is
+drawn, and every scene starts with one background polygon so no pixel is
+left uncovered.
 
-| kind      | construction                                                  | look                                  |
-| --------- | ------------------------------------------------------------- | ------------------------------------- |
-| `facet`   | one hue; triangles split from a vertex to the opposite edge   | paneled facade with seams, sunk panels |
-| `terrain` | jittered grid with random heights, flat-shaded; linear colors | strong low-poly relief                |
-| `lowpoly` | same mesh, faint relief; colors blended around a pale center  | soft low-poly gradient                |
+| kind    | harmony                  | construction                                                 | look                                    |
+| ------- | ------------------------ | ------------------------------------------------------------ | --------------------------------------- |
+| `flow`  | mono / analogous         | 2–5 wide bands on one shared wave, stacked with clear gaps   | a slow current across a quiet ground    |
+| `orbit` | analogous / muted compl. | 2–4 rings far larger than the screen, centered off it        | sweeps of huge rims; an accent on one   |
+| `facet` | mostly mono              | the screen cut into 6–10 convex faces shaded by pseudo normal | a pyramid, a box corner, a folded sheet |
 
-- `facet` does not carry a split into the neighboring triangle. The
-  T-junctions this leaves are what make it read as panels rather than a mesh
-- The mesh kinds sample their color field once per triangle, so every
-  polygon stays flat
+- `flow` bands never cross. A draft with independent amplitudes pinched the
+  ground between two bands into crescent slivers. Bands take at most 60%
+  of the height together
+- `orbit` draws its radius between the nearest and farthest distance from
+  the center to the screen, so the rim is guaranteed to cross it. Only
+  the angles that reach the screen become quads
+- `facet` keeps the old facade's T-junctions: a cut stops at the face it
+  splits, which reads as planes rather than a mesh. Cuts that would leave a
+  half under 30% of its parent or too thin are rejected, so slivers cannot
+  accumulate
+- Curves are sampled so that no joint bends more than about 2.3°. That puts
+  a band or arc at up to 160 quads, more than the few dozen first
+  proposed, but the quads are one color and cost nothing visible; fewer
+  would show the straight pieces on a wide curve
 
-Deferred: isometric solids with cast shadows, constructivist compositions
-(both worked in the proof of concept but are not the look wanted first), and
-a Delaunay triangulation for less regular triangle sizes.
+Removed: the `terrain` and `lowpoly` mesh kinds (fields of small
+triangles, the crowded look the set above avoids) and the facade's seams
+and sunk panels. Both are in the history before `feat!: drop the terrain
+and lowpoly kinds` if wanted again.
+
+Deferred: isometric solids with cast shadows and constructivist
+compositions (both worked in the proof of concept but are not the look
+wanted first).
+
+## Randomness
+
+- Every consumer of the seed draws from its own SplitMix64 stream: the
+  kind, the palette (harmony first, then colors) and the scene. A change in
+  how many numbers a scene takes never shifts the palette
+- The same scheme, kind, seed and size give the same polygons and the same
+  PNG
 
 ## Performance
 
-- Target: under 1 second at 1920×1200 (hyprpaper waits during ExecStartPre)
+- Target: under 1 second at 1920×1200 (hyprpaper waits during ExecStartPre);
+  measured around 0.08 s for every kind
+- A scene is a few hundred polygons at most, none of them small
 - The rasterizer records which polygon owns each of 4×4 samples per pixel,
   then averages in linear light. Both passes are split by rows over
   `std::thread::scope`
@@ -96,8 +132,17 @@ a Delaunay triangulation for less regular triangle sizes.
 
 ## Testing
 
-- Colors: base16 parsing, OKLab round trip, palette leveling
+- Colors: base16 parsing, OKLab round trip and polar helpers; each harmony's
+  hue relations, the chroma cap, the primary's hue being a scheme accent
 - Rasterizer: coverage, paint order, antialiased edges
-- Scenes: same seed → same polygons, every polygon convex, screen fully
-  covered
-- CLI: invalid `--size` or a missing scheme exits non-zero
+- Scenes, for every kind over many seeds: same seed → same polygons, every
+  polygon convex with an area, screen fully covered
+- `flow`: 2–5 bands within the width bounds, never crossing, never thinner
+  than the minimum; quad count bounded
+- `orbit`: 2–4 arcs centered off screen within the radius and width
+  bounds, each reaching the screen; quad count bounded; the accent on at
+  most one arc and at most 35% of it
+- `facet`: 6–10 faces, none thinner than the roundness floor; one hue under
+  a monochromatic palette
+- CLI: every kind can be asked for, a seed reproduces its PNG, invalid
+  `--size` or a missing scheme exits non-zero
