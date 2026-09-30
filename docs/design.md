@@ -48,40 +48,64 @@ instant-fusion --scheme <base16.yaml> --size 1920x1200 [--seed N] [--kind flow|o
   monochromatic (one hue, lightness steps only), analogous (secondary and
   accent within 45° on either side) or muted complementary (accent across
   the wheel, chroma capped lower still)
-- Chroma is capped at 0.07 everywhere, so a loud scheme still gives a
-  quiet wallpaper. Lightness steps outward from the background: darker
-  than a pale ground, lighter than a dim one
-- The accent is for small areas only; a scene keeps it under about 15% of
-  the image
+- Lightness is a hierarchy, ordered by the weight a color carries:
+  ground → secondary (the quiet figure) → primary (the main one) → accent
+  (the strongest, for the smallest area). Darker than a pale ground,
+  lighter than a dim one
+- Chroma is capped at 0.07 everywhere, and the accent loses a quarter of
+  it on a dark scheme, so a loud scheme still gives a quiet wallpaper
 - Mix in OKLab (sRGB interpolation muddies the midpoints)
 
 ## Scenes
 
-Three looks that must read as different pictures: a curve, an arc, a plane.
-All are minimal and large-scale; nothing smaller than a band or a face is
-drawn, and every scene starts with one background polygon so no pixel is
-left uncovered.
+Three looks that must read as different pictures: layered movement,
+fragments of huge off-screen geometry, large architectural planes. All
+share one principle: a hierarchy of one dominant element, quieter
+secondaries and at most a small accent, with uneven spacing and a wide
+quiet area, so nothing reads as "N equal shapes placed at random". Every
+scene starts with one background polygon so no pixel is left uncovered.
 
-| kind    | harmony                  | construction                                                 | look                                    |
-| ------- | ------------------------ | ------------------------------------------------------------ | --------------------------------------- |
-| `flow`  | mono / analogous         | 2–5 wide bands on one shared wave, stacked with clear gaps   | a slow current across a quiet ground    |
-| `orbit` | analogous / muted compl. | 2–4 rings far larger than the screen, centered off it        | sweeps of huge rims; an accent on one   |
-| `facet` | mostly mono              | the screen cut into 6–10 convex faces shaded by pseudo normal | a pyramid, a box corner, a folded sheet |
+| kind    | harmony                    | construction                                                                   |
+| ------- | -------------------------- | ------------------------------------------------------------------------------ |
+| `flow`  | mono / analogous           | one master curve; 2–4 bands ride it at their own width, scale and slight wave  |
+| `orbit` | analogous, rarely compl.   | one dominant ring a screen wide or more, centered off screen; 1–2 derived      |
+| `facet` | mostly mono                | 1–2 cuts edge to edge, then a few faces cut once more; shaded as one fold      |
 
-- `flow` bands never cross. A draft with independent amplitudes pinched the
-  ground between two bands into crescent slivers. Bands take at most 60%
-  of the height together
-- `orbit` draws its radius between the nearest and farthest distance from
-  the center to the screen, so the rim is guaranteed to cross it. Only
-  the angles that reach the screen become quads
-- `facet` keeps the old facade's T-junctions: a cut stops at the face it
-  splits, which reads as planes rather than a mesh. Cuts that would leave a
-  half under 30% of its parent or too thin are rejected, so slivers cannot
-  accumulate
-- Curves are sampled so that no joint bends more than about 2.3°. That puts
-  a band or arc at up to 160 quads, more than the few dozen first
+- `flow`: the master curve is two low-frequency waves and a tilt, so it
+  bends once or twice and may leave the screen. Widths are one dominant,
+  secondaries at 55–80% of it and an optional narrow accent; gaps are
+  uneven and a band may lie over its neighbor. Separation is measured
+  along the screen, so bands either keep a clear gap or clearly overlap;
+  a draft with free amplitudes pinched the ground between two bands into
+  crescent slivers
+- `orbit`: a secondary shares the dominant's center almost exactly at a
+  nearby radius; a rare accent shifts well away at a larger one. Each ring
+  is one color; an accent sweep painted along part of a ring read as tape.
+  Only the angles that reach the screen become quads
+- `facet`: the second long cut is either nearly parallel and well apart or
+  across the first but off center, so the two never meet in the middle;
+  a hub is what made the old fan read as the generator. Cuts stop at the
+  face they split (T-junctions read as planes, not a mesh) and are refused
+  when a half is under a quarter of its parent, under 2.5% of the image
+  or thinner than a 1:5 rectangle. Faces are convex polygons, not
+  triangles
+- Curves are sampled so that no joint bends more than about 2.3°. That
+  puts a band or ring at up to 200 quads, more than the few dozen first
   proposed, but the quads are one color and cost nothing visible; fewer
   would show the straight pieces on a wide curve
+
+### Composition scoring
+
+Each kind draws a few candidates per seed (four or five) and keeps the best
+by a score computed from the polygons alone: which polygon is on top at
+each point of a 48×30 grid gives the ground's share and each element's.
+Flow steers the ground toward half the image with the dominant band on
+screen; orbit toward about 72% and refuses rings crossing more than once,
+three rings in the middle, alike visible lengths or an oversized accent;
+facet wants its largest face at 25–45%, no face under 2% and no point in
+the middle where four or more faces meet. This spares the seeds that would
+have drawn a poor composition without touching determinism: every
+candidate draws from the scene stream.
 
 Removed: the `terrain` and `lowpoly` mesh kinds (fields of small
 triangles, the crowded look the set above avoids) and the facade's seams
@@ -95,15 +119,16 @@ wanted first).
 ## Randomness
 
 - Every consumer of the seed draws from its own SplitMix64 stream: the
-  kind, the palette (harmony first, then colors) and the scene. A change in
-  how many numbers a scene takes never shifts the palette
+  kind, the palette (harmony first, then colors) and the scene, candidates
+  included. A change in how many numbers a scene takes never shifts the
+  palette
 - The same scheme, kind, seed and size give the same polygons and the same
   PNG
 
 ## Performance
 
 - Target: under 1 second at 1920×1200 (hyprpaper waits during ExecStartPre);
-  measured around 0.08 s for every kind
+  measured around 0.07 s for every kind, candidates included
 - A scene is a few hundred polygons at most, none of them small
 - The rasterizer records which polygon owns each of 4×4 samples per pixel,
   then averages in linear light. Both passes are split by rows over
@@ -133,16 +158,21 @@ wanted first).
 ## Testing
 
 - Colors: base16 parsing, OKLab round trip and polar helpers; each harmony's
-  hue relations, the chroma cap, the primary's hue being a scheme accent
+  hue relations, the chroma cap, the lightness order, the calmer dark
+  accent, the primary's hue being a scheme accent
 - Rasterizer: coverage, paint order, antialiased edges
 - Scenes, for every kind over many seeds: same seed → same polygons, every
-  polygon convex with an area, screen fully covered
-- `flow`: 2–5 bands within the width bounds, never crossing, never thinner
-  than the minimum; quad count bounded
-- `orbit`: 2–4 arcs centered off screen within the radius and width
-  bounds, each reaching the screen; quad count bounded; the accent on at
-  most one arc and at most 35% of it
-- `facet`: 6–10 faces, none thinner than the roundness floor; one hue under
-  a monochromatic palette
+  polygon convex with an area, screen fully covered; the candidate picker
+  and the grid of owners
+- `flow`: 2–5 bands with one dominant and clearly different widths, every
+  pair either clearly apart or clearly overlapping, quads bounded and never
+  thinner than the minimum
+- `orbit`: 2–3 rings with one dominant, every center clearly off screen,
+  every ring reaching the screen in one color; the chosen scene has at
+  most three colors and a bounded quad count; the crossing counter on
+  known circles
+- `facet`: 5–10 faces covering the frame exactly, one at 18% or more, none
+  under 2.5% or thinner than the roundness floor; neighbors at least 0.05
+  apart in lightness; one hue under a monochromatic palette
 - CLI: every kind can be asked for, a seed reproduces its PNG, invalid
   `--size` or a missing scheme exits non-zero
